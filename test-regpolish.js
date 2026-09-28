@@ -229,12 +229,16 @@ function baseEvent(over = {}) {
   await adminFlows.handle(startNoPing);
   ok('start: no ping when role not set', !state.sends.some((s) => typeof s.payload === 'string' && s.payload.includes('🔔')));
 
-  // ---------- 9. ping role select saved ----------
+  // ---------- 9. combined roles select saved ----------
   state.event = baseEvent();
   state.updates.length = 0;
-  const pingSel = mockInteraction('roleselect', 'admin:regmgr:pingrole:e1', {}, { values: ['newping'] });
-  await adminFlows.handle(pingSel);
-  ok('pingrole select: saved', state.updates.some((u) => u.pingRoleId === 'newping'));
+  const rolesSel = mockInteraction('roleselect', 'admin:regmgr:roles:e1', {}, { values: ['success1', 'ping1'] });
+  await adminFlows.handle(rolesSel);
+  ok('roles select: success + ping saved', state.updates.some((u) => u.successRoleId === 'success1' && u.pingRoleId === 'ping1'));
+  state.updates.length = 0;
+  const rolesSelOne = mockInteraction('roleselect', 'admin:regmgr:roles:e1', {}, { values: ['success1'] });
+  await adminFlows.handle(rolesSelOne);
+  ok('roles select: single pick clears ping', state.updates.some((u) => u.successRoleId === 'success1' && u.pingRoleId === null));
 
   // ---------- 10. panel payloads well-formed ----------
   const pp = eventFlows.registrationPostPayload(baseEvent({ status: 'OPEN', tagsRequired: 0 }), 0);
@@ -248,8 +252,10 @@ function baseEvent(over = {}) {
   ok('post payload: Register disabled when full', ppFull.components[0].components[0].data.disabled === true);
 
   const rows = adminFlows.regManagerRows(baseEvent({ status: 'DRAFT' }), 'none');
-  ok('reg manager: 6 rows', rows.length === 6);
+  ok('reg manager: at most 5 rows (Discord limit)', rows.length <= 5);
+  ok('reg manager: exactly 5 rows', rows.length === 5);
   ok('reg manager: no row exceeds 5 components', rows.every((r) => r.components.length <= 5));
+  ok('reg manager: no row has >1 select', rows.every((r) => r.components.filter((c) => c.data.custom_id && /:(regch|logch|roles):/.test(c.data.custom_id)).length <= 1));
   const row2Labels = rows[1].components.map((c) => c.data.label).filter(Boolean);
   ok('reg manager: Post Panel next to Start Registration', row2Labels.includes('Post Panel') && row2Labels.includes('Start Registration'));
   const embed = adminFlows.regManagerEmbed(baseEvent({ regChannelId: null, logChannelId: null, successRoleId: null, pingRoleId: 'p1' }), 0, 'none');

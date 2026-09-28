@@ -139,7 +139,7 @@ const cases = [
   ['admin:reg:close', adminFlows, 'button', 'admin:reg:close:e1'],
   ['admin:regmgr:regch (select)', adminFlows, 'select', 'admin:regmgr:regch:e1'],
   ['admin:regmgr:logch (select)', adminFlows, 'select', 'admin:regmgr:logch:e1'],
-  ['admin:regmgr:role (select)', adminFlows, 'select', 'admin:regmgr:role:e1'],
+  ['admin:regmgr:roles (select)', adminFlows, 'select', 'admin:regmgr:roles:e1'],
   ['admin:regedit:submit:name', adminFlows, 'modal', 'admin:regedit:submit:name:e1', { f_value: 'New Name' }],
   ['admin:regedit:submit:slots', adminFlows, 'modal', 'admin:regedit:submit:slots:e1', { f_value: '20' }],
   ['admin:regedit:submit:tags', adminFlows, 'modal', 'admin:regedit:submit:tags:e1', { f_value: '4' }],

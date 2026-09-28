@@ -203,15 +203,17 @@ function regManagerRows(event, idpState) {
       .setPlaceholder('Select new Log Channel')
       .addChannelTypes(ChannelType.GuildText)
   );
+  // One row for both roles (Discord allows max 5 rows per message): the 1st pick
+  // is the Success Role, an optional 2nd pick is the Ping Role.
   const row5 = new ActionRowBuilder().addComponents(
-    new RoleSelectMenuBuilder().setCustomId(`admin:regmgr:role:${event.id}`).setPlaceholder('Select new Success Role')
-  );
-  const row6 = new ActionRowBuilder().addComponents(
     new RoleSelectMenuBuilder()
-      .setCustomId(`admin:regmgr:pingrole:${event.id}`)
-      .setPlaceholder('Select Ping Role (optional — pinged once when registration starts)')
+      .setCustomId(`admin:regmgr:roles:${event.id}`)
+      .setPlaceholder('Select Success Role (+ optional 2nd role = ping on start)')
+      .setMinValues(1)
+      .setMaxValues(2)
+      .setDefaultRoles([event.successRoleId, event.pingRoleId].filter(Boolean))
   );
-  return [row1, row2, row3, row4, row5, row6];
+  return [row1, row2, row3, row4, row5];
 }
 
 async function showRegManager(interaction, eventId, useUpdate) {
@@ -1003,18 +1005,27 @@ async function handleSelect(interaction) {
     return interaction.editReply({ content: `✅ Registration post published in <#${channelId}>.`, embeds: [], components: [] });
   }
 
-  if (id.startsWith('admin:regmgr:regch:') || id.startsWith('admin:regmgr:logch:') || id.startsWith('admin:regmgr:role:')) {
+  if (id.startsWith('admin:regmgr:regch:') || id.startsWith('admin:regmgr:logch:') || id.startsWith('admin:regmgr:roles:')) {
     const parts = id.split(':');
     const kind = parts[2];
     const eventId = parts[3];
-    const value = interaction.values[0];
     await interaction.deferUpdate();
     const event = await prisma.tournament.findUnique({ where: { id: eventId } });
     if (!event) return interaction.editReply({ content: 'Event not found.', embeds: [], components: [] });
-    const data = kind === 'regch' ? { regChannelId: value } : kind === 'logch' ? { logChannelId: value } : { successRoleId: value };
+    let data, label;
+    if (kind === 'regch') {
+      data = { regChannelId: interaction.values[0] };
+      label = `registration channel -> ${interaction.values[0]}`;
+    } else if (kind === 'logch') {
+      data = { logChannelId: interaction.values[0] };
+      label = `log channel -> ${interaction.values[0]}`;
+    } else {
+      // Combined role picker: 1st pick = Success Role, optional 2nd pick = Ping Role.
+      const vals = interaction.values || [];
+      data = { successRoleId: vals[0] ?? null, pingRoleId: vals[1] ?? null };
+      label = `success role -> ${vals[0]}${vals[1] ? `, ping role -> ${vals[1]}` : ', ping role cleared'}`;
+    }
     await prisma.tournament.update({ where: { id: eventId }, data });
-    const label =
-      kind === 'regch' ? `registration channel -> ${value}` : kind === 'logch' ? `log channel -> ${value}` : `success role -> ${value}`;
     await adminAudit(interaction, 'REG_FIELD_EDIT', `${event.name}: ${label}`);
     if (kind === 'regch') {
       // Auto-create the #slot-manager channel in the same category.
@@ -1029,16 +1040,6 @@ async function handleSelect(interaction) {
     return showRegManager(interaction, eventId, true);
   }
 
-  if (id.startsWith('admin:regmgr:pingrole:')) {
-    const eventId = id.split(':')[3];
-    const value = interaction.values[0];
-    await interaction.deferUpdate();
-    const event = await prisma.tournament.findUnique({ where: { id: eventId } });
-    if (!event) return interaction.editReply({ content: 'Event not found.', embeds: [], components: [] });
-    await prisma.tournament.update({ where: { id: eventId }, data: { pingRoleId: value } });
-    await adminAudit(interaction, 'REG_FIELD_EDIT', `${event.name}: ping role -> ${value}`);
-    return showRegManager(interaction, eventId, true);
-  }
 
   if (id === 'admin:log:pick') {
     await interaction.deferUpdate();
