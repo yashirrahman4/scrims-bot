@@ -70,17 +70,17 @@ function wizSelectPayload(draft, settings) {
   const maxPlayers = settings.teamSize + settings.maxSubs;
   const embed = new EmbedBuilder()
     .setColor(0x5865f2)
-    .setTitle(`Team ${draft.name} — Step 1 Completed`)
+    .setTitle('🛡️ Team Registration')
+    .setDescription(`**${draft.name} [${draft.tag}]**\n✅ Step 1 of 3 complete — now select your players.`)
     .addFields(
-      { name: 'Team Name', value: draft.name, inline: true },
-      { name: 'Team Tag', value: draft.tag, inline: true },
-      { name: 'Email', value: draft.email || '—', inline: true },
-      { name: 'Phone', value: draft.phone || '—', inline: true },
+      { name: '👥 Team', value: `**${draft.name}**\nTag: \`${draft.tag}\``, inline: true },
+      { name: '✉️ Contact', value: `${draft.email || '—'}\n${draft.phone || '—'}`, inline: true },
       {
-        name: 'Select Team Players',
-        value: `Pick ${settings.teamSize}–${maxPlayers} players for the team (including yourself if you play).`,
+        name: '🎮 Select Players',
+        value: `Pick **${settings.teamSize}–${maxPlayers}** players for the team (including yourself if you play).`,
       }
-    );
+    )
+    .setFooter({ text: 'Step 2 of 3 • Player selection' });
   const select = new UserSelectMenuBuilder()
     .setCustomId('team:wiz:players')
     .setPlaceholder('Select team players')
@@ -95,17 +95,21 @@ function wizDetailsPayload(draft, settings) {
   const set = draft.playerIds.filter((id) => draft.details[id]);
   const lines = draft.playerIds.map((id, i) => {
     const d = draft.details[id];
-    const mark = d ? '✅' : '❌';
-    return `${mark} **P${i + 1}** <@${id}>\n↳ IGN: ${d ? `\`${d.ign}\`` : '—'} · UID: ${d ? `\`${d.uid}\`` : '—'}`;
+    const mark = d ? '✅' : '⬜';
+    return `${mark} **P${i + 1}** <@${id}> — IGN: ${d ? `\`${d.ign}\`` : '*not set*'} · UID: ${d ? `\`${d.uid}\`` : '*not set*'}`;
   });
   const allSet = total >= settings.teamSize && set.length === total;
+  const remaining = total - set.length;
   const embed = new EmbedBuilder()
     .setColor(allSet ? 0x57f287 : 0x5865f2)
-    .setTitle(`${draft.name} — Player Details`)
+    .setTitle('🛡️ Team Registration')
     .setDescription(
-      lines.join('\n') +
-        `\n\n${allSet ? '✅ All details set — press Submit!' : `⚠️ Set IGN + UID for ${total - set.length} more player${total - set.length === 1 ? '' : 's'} to continue.`}`
-    );
+      `**${draft.name} [${draft.tag}]**\n` +
+        `**Player Details** — ${set.length}/${total} complete\n\n` +
+        (allSet ? '✅ All details set — press **Submit**!' : `⚠️ Set IGN + UID for **${remaining}** more player${remaining === 1 ? '' : 's'} to continue.`)
+    )
+    .addFields({ name: '📝 Roster', value: lines.join('\n').slice(0, 1000) || '—' })
+    .setFooter({ text: 'Step 3 of 3 • Player details' });
   const rows = [];
   let row = new ActionRowBuilder();
   draft.playerIds.forEach((id, i) => {
@@ -201,19 +205,19 @@ async function ensureTeamRole(guild, team, discordIds) {
 function teamCardEmbed(team, relation) {
   const embed = new EmbedBuilder()
     .setColor(0x0b7a4b)
-    .setTitle(`${team.name} [${team.tag}]`)
+    .setTitle(`🛡️ ${team.name} [${team.tag}]`)
+    .setDescription(`Team ID: \`${team.teamId}\``)
     .addFields(
-      { name: 'Team ID', value: `\`${team.teamId}\``, inline: true },
-      { name: 'Status', value: team.status, inline: true },
-      { name: 'Region', value: team.region || '—', inline: true },
-      { name: 'Owner', value: `<@${team.owner.discordId}>`, inline: true }
+      { name: '📌 Status', value: `\`${team.status}\``, inline: true },
+      { name: '🌍 Region', value: team.region || '—', inline: true },
+      { name: '👑 Owner', value: `<@${team.owner.discordId}>`, inline: true }
     );
   if (relation === 'OWNER' && (team.email || team.phone)) {
-    embed.addFields({ name: 'Contact', value: [team.email, team.phone].filter(Boolean).join(' · '), inline: true });
+    embed.addFields({ name: '✉️ Contact', value: [team.email, team.phone].filter(Boolean).join('\n'), inline: true });
   }
   embed
-    .addFields({ name: `Roster (${team.members.length})`, value: rosterLines(team).join('\n').slice(0, 1000) || '—' })
-    .setFooter({ text: relation === 'OWNER' ? 'You own this team' : `You are on this team (${relation})` });
+    .addFields({ name: `👥 Roster (${team.members.length})`, value: rosterLines(team).join('\n').slice(0, 1000) || '—' })
+    .setFooter({ text: relation === 'OWNER' ? 'You own this team • manage it from Team Manager' : `You are on this team (${relation})` });
   if (team.logo) embed.setThumbnail(team.logo);
   return embed;
 }

@@ -102,6 +102,7 @@ model Tournament {
   logChannelId     String?
   successRoleId    String?
   successMessage   String?
+  pingRoleId       String?
   teamsPerGroup    Int?
   idpCategoryId    String?
   idpNamePattern   String?

@@ -68,6 +68,15 @@ async function regCount(eventId) {
   return prisma.tournamentRegistration.count({ where: { tournamentId: eventId, status: { in: ACTIVE_REG } } });
 }
 
+/** Required setup before the registration panel can be posted or registration started. */
+function setupGate(event) {
+  const missing = [];
+  if (!event.regChannelId) missing.push('Registration Channel');
+  if (!event.logChannelId) missing.push('Log Channel');
+  if (!event.successRoleId) missing.push('Success Role');
+  return missing;
+}
+
 function eventDetailEmbed(event, taken) {
   const statusColor = { DRAFT: 0x95a5a6, OPEN: 0x57f287, LOCKED: 0xf1c40f, LIVE: 0x5865f2, COMPLETED: 0x2c2f33, CANCELLED: 0xed4245 };
   return new EmbedBuilder()
@@ -135,7 +144,7 @@ async function showEventManager(interaction, eventId, useUpdate) {
 
 function regManagerEmbed(event, taken, idpState) {
   const open = event.status === 'OPEN';
-  const ch = (id) => (id ? `<#${id}>` : '—');
+  const ch = (id) => (id ? `<#${id}>` : '— ⚠️ required');
   return new EmbedBuilder()
     .setColor(open ? 0x57f287 : 0x95a5a6)
     .setTitle(`⚙️ Managing: ${event.name}`)
@@ -149,7 +158,8 @@ function regManagerEmbed(event, taken, idpState) {
       { name: 'Registration Starts', value: event.regStartsAt ? formatIST(event.regStartsAt) : '—', inline: true },
       { name: 'Registration Channel', value: ch(event.regChannelId), inline: true },
       { name: 'Log Channel', value: ch(event.logChannelId), inline: true },
-      { name: 'Success Role', value: event.successRoleId ? `<@&${event.successRoleId}>` : '—', inline: true },
+      { name: 'Success Role', value: event.successRoleId ? `<@&${event.successRoleId}>` : '— ⚠️ required', inline: true },
+      { name: 'Ping Role', value: event.pingRoleId ? `<@&${event.pingRoleId}>` : '— (optional)', inline: true },
       { name: 'Success Message', value: event.successMessage ? event.successMessage.slice(0, 250) : '—' }
     )
     .setFooter({ text: `ID: ${event.id}` });
@@ -170,6 +180,7 @@ function regManagerRows(event, idpState) {
     open
       ? new ButtonBuilder().setCustomId(`admin:reg:close:${event.id}`).setLabel('Close Registration').setStyle(ButtonStyle.Danger).setEmoji('🔒')
       : new ButtonBuilder().setCustomId(`admin:reg:start:${event.id}`).setLabel('Start Registration').setStyle(ButtonStyle.Success).setEmoji('▶️'),
+    new ButtonBuilder().setCustomId(`admin:reg:postpanel:${event.id}`).setLabel('Post Panel').setStyle(ButtonStyle.Secondary).setEmoji('📣'),
     eb('tpg', 'Teams/Group', '👥'),
     idpState === 'done'
       ? new ButtonBuilder().setCustomId('admin:idp:done').setLabel('IDP Groups Ready').setStyle(ButtonStyle.Secondary).setEmoji('🗂️').setDisabled(true)
@@ -195,7 +206,12 @@ function regManagerRows(event, idpState) {
   const row5 = new ActionRowBuilder().addComponents(
     new RoleSelectMenuBuilder().setCustomId(`admin:regmgr:role:${event.id}`).setPlaceholder('Select new Success Role')
   );
-  return [row1, row2, row3, row4, row5];
+  const row6 = new ActionRowBuilder().addComponents(
+    new RoleSelectMenuBuilder()
+      .setCustomId(`admin:regmgr:pingrole:${event.id}`)
+      .setPlaceholder('Select Ping Role (optional — pinged once when registration starts)')
+  );
+  return [row1, row2, row3, row4, row5, row6];
 }
 
 async function showRegManager(interaction, eventId, useUpdate) {
@@ -607,7 +623,7 @@ async function handleButton(interaction) {
     const cfg = {
       name: { title: 'Edit Event Name', label: 'Event name', style: TextInputStyle.Short, max: 80, ph: 'Evening Scrims #12' },
       slots: { title: 'Edit Total Slots', label: 'Total slots (2-2000)', style: TextInputStyle.Short, max: 4, ph: '20' },
-      tags: { title: 'Edit Tags Required', label: 'Tags required (1-8)', style: TextInputStyle.Short, max: 2, ph: '4' },
+      tags: { title: 'Edit Tags Required', label: 'Tags required (0-4)', style: TextInputStyle.Short, max: 1, ph: '4' },
       tpg: { title: 'Edit Teams Per Group', label: 'Teams per group 1-100 (empty = use settings)', style: TextInputStyle.Short, max: 3, ph: '20' },
       starttime: { title: 'Edit Registration Start', label: 'Start — YYYY-MM-DD HH:MM IST (empty = clear)', style: TextInputStyle.Short, max: 16, ph: '2026-10-01 18:00' },
       successmsg: { title: 'Edit Success Message', label: 'Message (empty = clear)', style: TextInputStyle.Paragraph, max: 500, ph: 'Welcome! Check the rules channel before match day.' },
@@ -635,21 +651,64 @@ async function handleButton(interaction) {
     await interaction.deferUpdate();
     const event = await prisma.tournament.findUnique({ where: { id: eventId } });
     if (!event) return interaction.editReply({ content: 'Event not found.', embeds: [], components: [] });
+    const missing = setupGate(event);
+    if (missing.length) {
+      return interaction.editReply({
+        content: null,
+        embeds: [errorEmbed(`❌ Set these before starting registration: **${missing.join(', ')}**. Use the selectors in the panel below.`)],
+        components: [],
+      });
+    }
     await prisma.tournament.update({ where: { id: eventId }, data: { status: 'OPEN', regStartsAt: new Date() } });
     await adminAudit(interaction, 'REG_START', `${event.name} registration started instantly`);
     await showRegManager(interaction, eventId, true);
-    // Instant start: post the announcement right away when a registration channel is already chosen.
-    if (event.regChannelId) {
+    // Instant start: post the announcement right away (the gate guarantees a registration channel).
+    try {
+      await postRegistrationAnnouncement(interaction.client, interaction.guildId, event.regChannelId, eventId);
+    } catch (e) {
+      console.error('[admin] instant-start announce failed:', e.message);
+    }
+    // Optional one-time ping: the configured ping role is mentioned exactly once, only on real start.
+    if (event.pingRoleId) {
       try {
-        await postRegistrationAnnouncement(interaction.client, interaction.guildId, event.regChannelId, eventId);
-        return interaction.followUp({ content: `✅ **${event.name}** registration is LIVE — announcement posted in <#${event.regChannelId}>.`, ephemeral: true });
+        const ch = await interaction.guild.channels.fetch(event.regChannelId).catch(() => null);
+        if (ch && ch.isTextBased()) {
+          await ch.send(`🔔 <@&${event.pingRoleId}> — registration for **${event.name}** is now OPEN! Tap **Register** below.`);
+          await adminAudit(interaction, 'REG_START_PING', `${event.name}: pinged role ${event.pingRoleId}`);
+        }
       } catch (e) {
-        console.error('[admin] instant-start announce failed:', e.message);
+        console.error('[admin] ping role send failed:', e.message);
       }
     }
     return interaction.followUp({
-      content: `✅ **${event.name}** registration is LIVE. Where should the registration post go?`,
-      components: announcePickerRows(eventId),
+      content: `✅ **${event.name}** registration is LIVE — announcement posted in <#${event.regChannelId}>.`,
+      ephemeral: true,
+    });
+  }
+
+  if (id.startsWith('admin:reg:postpanel:')) {
+    const eventId = id.split(':')[3];
+    await interaction.deferUpdate();
+    const event = await prisma.tournament.findUnique({ where: { id: eventId } });
+    if (!event) return interaction.editReply({ content: 'Event not found.', embeds: [], components: [] });
+    const missing = setupGate(event);
+    if (missing.length) {
+      return interaction.editReply({
+        content: null,
+        embeds: [errorEmbed(`❌ Set these before posting the panel: **${missing.join(', ')}**. Use the selectors in the panel below.`)],
+        components: [],
+      });
+    }
+    try {
+      await postRegistrationAnnouncement(interaction.client, interaction.guildId, event.regChannelId, eventId);
+    } catch (e) {
+      console.error('[admin] post panel failed:', e.message);
+      return interaction.editReply({ content: null, embeds: [errorEmbed(`Could not post the panel: ${e.message}`)], components: [] });
+    }
+    await adminAudit(interaction, 'REG_PANEL_POST', `${event.name} panel posted (status ${event.status})`);
+    await showRegManager(interaction, eventId, true);
+    return interaction.followUp({
+      content: `✅ Registration panel for **${event.name}** posted in <#${event.regChannelId}>. Registration is still **${event.status}** — players will see "not open yet" until you start it.`,
       ephemeral: true,
     });
   }
@@ -932,6 +991,17 @@ async function handleSelect(interaction) {
     return showRegManager(interaction, eventId, true);
   }
 
+  if (id.startsWith('admin:regmgr:pingrole:')) {
+    const eventId = id.split(':')[3];
+    const value = interaction.values[0];
+    await interaction.deferUpdate();
+    const event = await prisma.tournament.findUnique({ where: { id: eventId } });
+    if (!event) return interaction.editReply({ content: 'Event not found.', embeds: [], components: [] });
+    await prisma.tournament.update({ where: { id: eventId }, data: { pingRoleId: value } });
+    await adminAudit(interaction, 'REG_FIELD_EDIT', `${event.name}: ping role -> ${value}`);
+    return showRegManager(interaction, eventId, true);
+  }
+
   if (id === 'admin:log:pick') {
     await interaction.deferUpdate();
     return showLogSetup(interaction, true, interaction.values[0]);
@@ -964,8 +1034,8 @@ async function handleSelect(interaction) {
       mk('e_name', 'Name', 'Evening Scrims #12', TextInputStyle.Short, true, 80),
       mk('e_date', 'Date (optional) — YYYY-MM-DD HH:MM IST', '2026-10-01 19:00', TextInputStyle.Short, false, 16),
       mk('e_limit', 'Team limit (slots, max 2000)', '20', TextInputStyle.Short, true, 4),
-      mk('e_tags', 'Tags required (1-8)', 'Teammates the leader must tag', TextInputStyle.Short, false, 2),
-      mk('e_tpg', 'Teams per group (IDP groups)', 'e.g. 20 — empty = use settings', TextInputStyle.Short, false, 3)
+      mk('e_tags', 'Tags required (0-4)', 'Teammates the leader must tag', TextInputStyle.Short, true, 1),
+      mk('e_tpg', 'Teams per group (1-100)', 'e.g. 20', TextInputStyle.Short, true, 3)
     );
     // showModal must NOT be preceded by defer — Discord forbids defer-then-modal.
     return interaction.showModal(modal);
@@ -1140,8 +1210,8 @@ async function handleModal(interaction) {
       note = `slots -> ${n}`;
     } else if (field === 'tags') {
       const n = parseInt(raw, 10);
-      if (!raw || !Number.isInteger(n) || n < 1 || n > 8) {
-        return interaction.editReply({ embeds: [errorEmbed('Tags required must be a number between 1 and 8.')] });
+      if (!raw || !Number.isInteger(n) || n < 0 || n > 4) {
+        return interaction.editReply({ embeds: [errorEmbed('Tags required must be a number between 0 and 4.')] });
       }
       data = { tagsRequired: n, teamSize: n };
       note = `tags required -> ${n}`;
@@ -1184,7 +1254,6 @@ async function handleModal(interaction) {
     const name = interaction.fields.getTextInputValue('e_name').trim();
     const dateRaw = interaction.fields.getTextInputValue('e_date').trim();
     const limitRaw = interaction.fields.getTextInputValue('e_limit').trim();
-    const tagsRaw = interaction.fields.getTextInputValue('e_tags').trim();
 
     const teamLimit = parseInt(limitRaw, 10);
     if (!Number.isInteger(teamLimit) || teamLimit < 2 || teamLimit > 2000) {
@@ -1195,17 +1264,15 @@ async function handleModal(interaction) {
       date = parseDateTimeIST(dateRaw);
       if (!date) return interaction.editReply({ embeds: [errorEmbed('Date must be `YYYY-MM-DD HH:MM` in IST (e.g. 2026-10-01 19:00).')] });
     }
-    const tagsRequired = tagsRaw ? parseInt(tagsRaw, 10) : 4;
-    if (!Number.isInteger(tagsRequired) || tagsRequired < 1 || tagsRequired > 8) {
-      return interaction.editReply({ embeds: [errorEmbed('Tags required must be a number between 1 and 8.')] });
+    const tagsRaw = interaction.fields.getTextInputValue('e_tags').trim();
+    const tagsRequired = parseInt(tagsRaw, 10);
+    if (!tagsRaw || !Number.isInteger(tagsRequired) || tagsRequired < 0 || tagsRequired > 4) {
+      return interaction.editReply({ embeds: [errorEmbed('Tags required is compulsory — enter a number between 0 and 4.')] });
     }
     const tpgRaw = interaction.fields.getTextInputValue('e_tpg').trim();
-    let teamsPerGroup = null;
-    if (tpgRaw) {
-      teamsPerGroup = parseInt(tpgRaw, 10);
-      if (!Number.isInteger(teamsPerGroup) || teamsPerGroup < 1 || teamsPerGroup > 100) {
-        return interaction.editReply({ embeds: [errorEmbed('Teams per group must be a number between 1 and 100, or left empty.')] });
-      }
+    const teamsPerGroup = parseInt(tpgRaw, 10);
+    if (!tpgRaw || !Number.isInteger(teamsPerGroup) || teamsPerGroup < 1 || teamsPerGroup > 100) {
+      return interaction.editReply({ embeds: [errorEmbed('Teams per group is compulsory — enter a number between 1 and 100.')] });
     }
 
     const token = stashCreation({ type, name, date: date ? date.toISOString() : null, teamLimit, tagsRequired, teamsPerGroup, createdBy: interaction.user.id });
@@ -1405,4 +1472,4 @@ async function handleModal(interaction) {
   }
 }
 
-module.exports = { handle, stashCreation };
+module.exports = { handle, stashCreation, setupGate, regManagerRows, regManagerEmbed };

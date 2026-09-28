@@ -47,8 +47,8 @@ async function slotsTaken(eventId) {
 async function checkEligibility(event, team) {
   if (!team) return 'Please register a team first (Team Verification panel).';
   if (team.status !== 'ACTIVE') return 'Your team is not active. Contact an admin.';
-  const need = event.tagsRequired || 4;
-  if (starterCount(team) < need)
+  const need = event.tagsRequired ?? 4;
+  if (need > 0 && starterCount(team) < need)
     return `Your roster needs at least ${need} starters — your leader must tag ${need} teammates at registration. Add players from Team Manager.`;
   const existing = await prisma.tournamentRegistration.findFirst({
     where: { tournamentId: event.id, teamId: team.id, status: { not: 'REMOVED' } },
@@ -202,7 +202,7 @@ async function askForTags(interaction, eventId, useUpdate) {
   if (useUpdate && !interaction.deferred && !interaction.replied) await interaction.deferUpdate();
   const event = await prisma.tournament.findUnique({ where: { id: eventId } });
   if (!event || event.status !== 'OPEN') {
-    const p = { content: 'This event is no longer open.', embeds: [], components: [] };
+    const p = { content: `Registration for **${event?.name || 'this event'}** is not open yet.`, embeds: [], components: [] };
     if (interaction.deferred) return interaction.editReply(p);
     return interaction.reply({ ...p, ephemeral: true });
   }
@@ -219,7 +219,12 @@ async function askForTags(interaction, eventId, useUpdate) {
     if (interaction.deferred) return interaction.editReply(p);
     return interaction.reply({ ...p, ephemeral: true });
   }
-  const tags = event.tagsRequired || 4;
+  const tags = event.tagsRequired ?? 4;
+  if (tags === 0) {
+    // No teammates to tag — register straight away (a UserSelectMenu with
+    // min/max 0 is invalid, so the picker is skipped entirely).
+    return finalizeRegistration(interaction, event, team, dbUser, []);
+  }
   const row = new ActionRowBuilder().addComponents(
     new UserSelectMenuBuilder()
       .setCustomId(`event:tags:${event.id}`)
@@ -236,27 +241,8 @@ async function askForTags(interaction, eventId, useUpdate) {
   return useUpdate ? interaction.update(payload) : interaction.reply({ ...payload, ephemeral: true });
 }
 
-/** Finalize a registration after the leader tagged their teammates. */
-async function confirmRegistrationWithTags(interaction, eventId) {
-  await interaction.deferUpdate();
-  const event = await prisma.tournament.findUnique({ where: { id: eventId } });
-  if (!event || event.status !== 'OPEN') {
-    return interaction.editReply({ content: 'This event is no longer open.', embeds: [], components: [] });
-  }
-  if (regNotStarted(event)) {
-    return interaction.editReply({ content: null, embeds: [errorEmbed(regStartsInMessage(event))], components: [] });
-  }
-  const dbUser = await getOrCreateUser(interaction.user);
-  const team = await getOwnedTeam(dbUser.id);
-  const problem = await checkEligibility(event, team);
-  if (problem) {
-    return interaction.editReply({ content: null, embeds: [errorEmbed(problem)], components: [] });
-  }
-  const tags = event.tagsRequired || 4;
-  const taggedIds = [...new Set(interaction.values || [])];
-  if (taggedIds.length !== tags) {
-    return interaction.editReply({ content: null, embeds: [errorEmbed(`Please tag exactly ${tags} teammates.`)] , components: [] });
-  }
+/** Finalize a registration (shared by the tag-picker submit and the no-tags direct path). */
+async function finalizeRegistration(interaction, event, team, dbUser, taggedIds) {
   const settings = await getSettings(interaction.guildId);
   let reg;
   try {
@@ -276,22 +262,57 @@ async function confirmRegistrationWithTags(interaction, eventId) {
   await applyRegistrationExtras(interaction, event, team, reg);
 }
 
+/** Finalize a registration after the leader tagged their teammates. */
+async function confirmRegistrationWithTags(interaction, eventId) {
+  await interaction.deferUpdate();
+  const event = await prisma.tournament.findUnique({ where: { id: eventId } });
+  if (!event || event.status !== 'OPEN') {
+    return interaction.editReply({ content: 'Registration for this event is not open yet.', embeds: [], components: [] });
+  }
+  if (regNotStarted(event)) {
+    return interaction.editReply({ content: null, embeds: [errorEmbed(regStartsInMessage(event))], components: [] });
+  }
+  const dbUser = await getOrCreateUser(interaction.user);
+  const team = await getOwnedTeam(dbUser.id);
+  const problem = await checkEligibility(event, team);
+  if (problem) {
+    return interaction.editReply({ content: null, embeds: [errorEmbed(problem)], components: [] });
+  }
+  const tags = event.tagsRequired ?? 4;
+  const taggedIds = [...new Set(interaction.values || [])];
+  if (taggedIds.length !== tags) {
+    return interaction.editReply({ content: null, embeds: [errorEmbed(`Please tag exactly ${tags} teammates.`)] , components: [] });
+  }
+  return finalizeRegistration(interaction, event, team, dbUser, taggedIds);
+}
+
 /** Public announcement post for an event's registration channel (mirrors the reference style). */
 function registrationPostPayload(event, taken) {
   const left = Math.max(event.teamLimit - taken, 0);
-  const tags = event.tagsRequired || 4;
+  const tags = event.tagsRequired ?? 4;
+  const isScrim = event.type === 'SCRIM';
   const embed = new EmbedBuilder()
-    .setColor(event.type === 'SCRIM' ? 0x5865f2 : 0x9b59b6)
-    .setTitle(`${event.type === 'SCRIM' ? '🎯' : '🏆'} ${event.name}`)
+    .setColor(isScrim ? 0x5865f2 : 0x9b59b6)
+    .setTitle(`${isScrim ? '🎯' : '🏆'} ${event.name}`)
     .setDescription(
-      (event.description || `Tap the Register button below to register for ${event.name}.`) +
-        `\n\nDate: ${formatIST(event.date)}\nSlots: **${taken}/${event.teamLimit}** (${left} left)\n🏷️ Tag your ${tags} teammates when you register.`
-    );
+      `**${isScrim ? 'Scrim' : 'Tournament'} Registration**\n` +
+        (event.description || `Tap **Register** below to lock in your slot for **${event.name}**.`)
+    )
+    .addFields(
+      { name: '🗓️ Date', value: formatIST(event.date), inline: true },
+      { name: '🎰 Slots', value: `${taken}/${event.teamLimit}`, inline: true },
+      { name: '🪑 Slots Left', value: left > 0 ? `**${left}** remaining` : '~~Full~~', inline: true },
+      { name: '🏷️ Tags Required', value: tags === 0 ? 'None — register directly' : `Tag **${tags}** teammates`, inline: true },
+      { name: '📌 Status', value: event.status === 'OPEN' ? '🟢 Registration Open' : '🔴 Not Open Yet', inline: true },
+      { name: '📝 How to Register', value: 'Press **Register** → tag your teammates (if required) → done. You will get your slot number instantly.' }
+    )
+    .setFooter({ text: `${event.name} • Slots are first come, first served` })
+    .setTimestamp();
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId(`event:registerpost:${event.id}`)
-      .setLabel('Register')
-      .setStyle(ButtonStyle.Primary)
+      .setLabel(left > 0 ? 'Register' : 'Slots Full')
+      .setStyle(left > 0 ? ButtonStyle.Success : ButtonStyle.Secondary)
       .setEmoji('✅')
       .setDisabled(left <= 0)
   );
@@ -330,7 +351,7 @@ function eventCardEmbed(event, taken) {
     .setDescription(event.description || '—')
     .addFields(
       { name: 'Date', value: formatIST(event.date), inline: true },
-      { name: 'Tags Required', value: String(event.tagsRequired || 4), inline: true },
+      { name: 'Tags Required', value: String(event.tagsRequired ?? 4), inline: true },
       { name: 'Slots', value: `${taken}/${event.teamLimit} (${left} left)`, inline: true }
     );
 }
