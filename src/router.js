@@ -69,6 +69,7 @@ async function handleInteraction(interaction) {
     if (id.startsWith('admin:')) return adminFlows.handle(interaction);
     if (id.startsWith('idp:')) return idpFlows.handle(interaction);
     if (id.startsWith('slot:')) return slotFlows.handle(interaction);
+    if (id.startsWith('dm:')) return adminFlows.handleDmOptOut(interaction);
   } catch (err) {
     console.error('[router] error:', err);
     try {

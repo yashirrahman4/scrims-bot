@@ -11,6 +11,7 @@ model User {
   id        String   @id @default(cuid())
   discordId String   @unique
   username  String
+  dmOptOut  Boolean  @default(false)
   teams     Team[]   @relation("TeamOwner")
   createdAt DateTime @default(now())
 }

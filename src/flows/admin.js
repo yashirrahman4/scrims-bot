@@ -426,31 +426,69 @@ async function handleButton(interaction) {
     const teams = await prisma.team.findMany({ where: { status: 'ACTIVE' }, include: { owner: true }, orderBy: { createdAt: 'asc' } });
     let sent = 0;
     let failed = 0;
+    let skipped = 0;
     const failedTags = [];
-    const embed = new EmbedBuilder().setColor(0x5865f2).setTitle(`📢 ${draft.title}`).setDescription(draft.message);
+    const embed = new EmbedBuilder()
+      .setColor(0x5865f2)
+      .setTitle(`📢 ${draft.title}`)
+      .setDescription(draft.message)
+      .setFooter({ text: 'Server update from the admin team · tap 🔕 below to stop these broadcasts' });
+    const optOutRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('dm:optout').setLabel('Mute these updates').setStyle(ButtonStyle.Secondary).setEmoji('🔕')
+    );
     for (const t of teams) {
+      if (t.owner?.dmOptOut) {
+        skipped++;
+        continue;
+      }
       try {
         const user = await interaction.client.users.fetch(t.owner.discordId);
-        await user.send({ embeds: [embed] });
+        await user.send({ embeds: [embed], components: [optOutRow] });
         sent++;
       } catch {
         failed++;
         if (failedTags.length < 20) failedTags.push(t.tag);
       }
-      if ((sent + failed) % 20 === 0) {
-        await statusMsg.edit({ content: `📣 Sending… (${sent} sent, ${failed} failed, ${sent + failed}/${teams.length})` }).catch(() => {});
+      if ((sent + failed + skipped) % 20 === 0) {
+        await statusMsg.edit({ content: `📣 Sending… (${sent} sent, ${failed} failed, ${skipped} muted, ${sent + failed + skipped}/${teams.length})` }).catch(() => {});
       }
-      await new Promise((r) => setTimeout(r, 750)); // stay well under DM rate limits
+      // Throttled + jittered: stays well under DM rate limits and avoids spam-cannon patterns.
+      await new Promise((r) => setTimeout(r, 900 + Math.random() * 600));
     }
-    await adminAudit(interaction, 'DM_BROADCAST', `"${draft.title}" -> ${sent} sent, ${failed} failed`);
+    await adminAudit(interaction, 'DM_BROADCAST', `"${draft.title}" -> ${sent} sent, ${failed} failed, ${skipped} muted-skipped`);
     await statusMsg
       .edit({
         content:
-          `✅ Broadcast finished: **${sent}** delivered, **${failed}** failed (DMs closed/blocked).` +
+          `✅ Broadcast finished: **${sent}** delivered, **${failed}** failed (DMs closed/blocked), **${skipped}** skipped (muted).` +
           (failedTags.length ? `\nFailed: ${failedTags.join(', ')}${failed > failedTags.length ? ` (+${failed - failedTags.length} more)` : ''}` : ''),
       })
       .catch(() => {});
     return;
+  }
+
+
+  if (id === 'admin:dm:unmute') {
+    await interaction.deferUpdate();
+    const res = await prisma.user.updateMany({ where: { dmOptOut: true }, data: { dmOptOut: false } });
+    await adminAudit(interaction, 'DM_UNMUTE_ALL', `${interaction.user.tag} re-enabled broadcast DMs for ${res.count} users`);
+    // Re-render the preview if a draft is still pending.
+    const draft = dmDrafts.get(interaction.user.id);
+    if (draft) {
+      const count = await prisma.team.count({ where: { status: 'ACTIVE' } });
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('admin:dm:yes').setLabel(`Send to ${count} team owners`).setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId('admin:dm:no').setLabel('Cancel').setStyle(ButtonStyle.Secondary)
+      );
+      const row2 = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('admin:dm:unmute').setLabel('Unmute all (0 muted)').setStyle(ButtonStyle.Secondary).setEmoji('🔔').setDisabled(true)
+      );
+      return interaction.editReply({
+        content: `✅ Unmuted **${res.count}** users.\nPreview — this will DM **every active team owner**:`,
+        embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle(`📢 ${draft.title}`).setDescription(draft.message)],
+        components: [row, row2],
+      });
+    }
+    return interaction.editReply({ content: `✅ Unmuted **${res.count}** users.`, embeds: [], components: [] });
   }
 
   if (id === 'admin:logs') {
@@ -1422,16 +1460,29 @@ async function handleModal(interaction) {
     const message = interaction.fields.getTextInputValue('dm_message').trim();
     dmDrafts.set(interaction.user.id, { title, message });
     const count = await prisma.team.count({ where: { status: 'ACTIVE' } });
+    const muted = await prisma.user.count({ where: { dmOptOut: true } });
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId('admin:dm:yes').setLabel(`Send to ${count} team owners`).setStyle(ButtonStyle.Danger),
       new ButtonBuilder().setCustomId('admin:dm:no').setLabel('Cancel').setStyle(ButtonStyle.Secondary)
     );
+    const row2 = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId('admin:dm:unmute')
+        .setLabel(`Unmute all (${muted} muted)`)
+        .setStyle(ButtonStyle.Secondary)
+        .setEmoji('🔔')
+        .setDisabled(muted === 0)
+    );
     return interaction.editReply({
-      content: 'Preview — this will DM **every active team owner**:',
+      content:
+        'Preview — this will DM **every active team owner** except those who muted broadcasts:\n' +
+        `📇 Recipients: **${count}** · 🔕 Muted (skipped): **${muted}**\n` +
+        '⚠️ Keep broadcasts rare and important — mass DMs that annoy users get reported, and enough reports can get the bot banned.',
       embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle(`📢 ${title}`).setDescription(message)],
-      components: [row],
+      components: [row, row2],
     });
   }
+
 
   if (id === 'admin:settings:modal') {
     await interaction.deferReply({ ephemeral: true });
@@ -1472,4 +1523,23 @@ async function handleModal(interaction) {
   }
 }
 
-module.exports = { handle, stashCreation, setupGate, regManagerRows, regManagerEmbed };
+module.exports = { handle, handleDmOptOut, stashCreation, setupGate, regManagerRows, regManagerEmbed };
+
+/**
+ * Broadcast opt-out, tapped by the DM recipient (NOT an admin) inside their own
+ * DMs — deliberately outside the requireAdmin gate. Defer-first, then persist.
+ */
+async function handleDmOptOut(interaction) {
+  if (interaction.customId !== 'dm:optout') return;
+  await interaction.deferUpdate();
+  await prisma.user.upsert({
+    where: { discordId: interaction.user.id },
+    update: { dmOptOut: true },
+    create: { discordId: interaction.user.id, username: interaction.user.tag ?? interaction.user.username, dmOptOut: true },
+  });
+  return interaction.editReply({
+    content: '🔕 **Muted.** You will no longer receive server broadcast DMs.\nIf you change your mind later, ask a server admin to re-enable them for you.',
+    embeds: [],
+    components: [],
+  });
+}
