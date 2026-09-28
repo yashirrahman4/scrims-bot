@@ -1,0 +1,30 @@
+{
+  "dependencies": {
+    "@prisma/client": "^5.18.0",
+    "discord.js": "^14.15.3",
+    "dotenv": "^16.4.5",
+    "https-proxy-agent": "^9.1.0"
+  },
+  "description": "Discord bot for BGMI scrims and tournament operations (discord.js + Prisma + PostgreSQL)",
+  "devDependencies": {
+    "prisma": "^5.18.0"
+  },
+  "engines": {
+    "node": ">=18.17.0"
+  },
+  "main": "src/index.js",
+  "name": "discord-scrims-bot",
+  "scripts": {
+    "db:deploy": "prisma migrate deploy",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:studio": "prisma studio",
+    "postinstall": "prisma generate",
+    "deploy:commands": "node scripts/deploy-commands.js",
+    "start": "node src/index.js",
+    "start:proxy": "node -r ./src/proxy-shim.js src/index.js",
+    "deploy:commands:proxy": "node -r ./src/proxy-shim.js scripts/deploy-commands.js"
+  },
+  "type": "commonjs",
+  "version": "1.0.0"
+}

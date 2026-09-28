@@ -1,0 +1,150 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  discordId String   @unique
+  username  String
+  teams     Team[]   @relation("TeamOwner")
+  createdAt DateTime @default(now())
+}
+
+enum TeamStatus {
+  ACTIVE
+  SUSPENDED
+  DISBANDED
+}
+
+model Team {
+  id            String                   @id @default(cuid())
+  teamId        String                   @unique
+  name          String
+  tag           String                   @unique
+  logo          String?
+  region        String?
+  email         String?
+  phone         String?
+  status        TeamStatus               @default(ACTIVE)
+  roleId        String?
+  ownerId       String
+  owner         User                     @relation("TeamOwner", fields: [ownerId], references: [id])
+  members       TeamMember[]
+  registrations TournamentRegistration[]
+  createdAt     DateTime                 @default(now())
+}
+
+model Player {
+  id        String       @id @default(cuid())
+  discordId String?      @unique
+  gameUid   String       @unique
+  ign       String
+  members   TeamMember[]
+  createdAt DateTime     @default(now())
+}
+
+enum MemberRole {
+  OWNER
+  PLAYER
+  SUB
+}
+
+model TeamMember {
+  id       String     @id @default(cuid())
+  teamId   String
+  team     Team       @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  playerId String
+  player   Player     @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  role     MemberRole
+  joinedAt DateTime   @default(now())
+
+  @@unique([teamId, playerId])
+}
+
+enum EventType {
+  SCRIM
+  TOURNAMENT
+}
+
+enum EventStatus {
+  DRAFT
+  OPEN
+  LOCKED
+  LIVE
+  COMPLETED
+  CANCELLED
+}
+
+model Tournament {
+  id               String                   @id @default(cuid())
+  name             String
+  description      String?
+  type             EventType
+  format           String
+  date             DateTime?
+  maps             String[]
+  teamLimit        Int
+  region           String?
+  teamSize         Int                      @default(4)
+  status           EventStatus              @default(DRAFT)
+  createdBy        String
+  inviteUrl        String?
+  announceChannelId String?
+  announceMsgId    String?
+  regStartsAt      DateTime?
+  regChannelId     String?
+  logChannelId     String?
+  successRoleId    String?
+  successMessage   String?
+  registrations TournamentRegistration[]
+  createdAt        DateTime                 @default(now())
+}
+
+enum RegStatus {
+  PENDING
+  APPROVED
+  DISQUALIFIED
+  REMOVED
+}
+
+model TournamentRegistration {
+  id           String     @id @default(cuid())
+  tournamentId String
+  tournament   Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  teamId       String
+  team         Team       @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  registeredBy String
+  status       RegStatus  @default(PENDING)
+  slotNo       Int
+  groupNo      Int
+  registeredAt DateTime   @default(now())
+
+  @@unique([tournamentId, teamId])
+  @@unique([tournamentId, slotNo])
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  action    String
+  userId    String
+  details   String?
+  createdAt DateTime @default(now())
+}
+
+model GuildSettings {
+  id           String   @id @default(cuid())
+  guildId      String   @unique
+  adminRoleIds String[]
+  teamSize     Int      @default(4)
+  maxSubs      Int      @default(2)
+  teamIdPrefix String   @default("BR")
+  maps         String[]
+  groupSize    Int      @default(20)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}

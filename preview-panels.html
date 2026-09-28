@@ -1,0 +1,210 @@
+<style>
+.dc { background:#1e1f22; border-radius:12px; padding:16px; font-family:'gg sans','Whitney','Helvetica Neue',Arial,sans-serif; color:#dbdee1; max-width:640px; margin:0 auto 28px; box-sizing:border-box; }
+.dc-msg { background:#2b2d31; border-radius:8px; padding:12px 16px; margin-bottom:12px; }
+.dc-embed { background:#111214; border-left:4px solid #0b7a4b; border-radius:4px; padding:12px 14px; margin:8px 0 12px; }
+.dc-embed.c-green{border-color:#0b7a4b}.dc-embed.c-blue{border-color:#5865f2}.dc-embed.c-purple{border-color:#9b59b6}.dc-embed.c-yellow{border-color:#f1c40f}
+.dc-title { font-weight:700; font-size:16px; color:#fff; margin-bottom:8px; }
+.dc-desc { font-size:14px; line-height:1.45; color:#dbdee1; white-space:pre-line; }
+.dc-desc b { color:#fff; }
+.dc-row { display:flex; gap:8px; margin-top:8px; flex-wrap:wrap; }
+.dc-btn { border:none; border-radius:3px; padding:9px 14px; font-size:14px; font-weight:500; color:#fff; cursor:default; font-family:inherit; }
+.dc-btn.success{background:#23a55a}.dc-btn.primary{background:#5865f2}.dc-btn.secondary{background:#4e5058}
+.dc-head { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
+.dc-avatar { width:40px; height:40px; border-radius:50%; background:#5865f2; display:flex; align-items:center; justify-content:center; font-weight:700; color:#fff; font-size:18px; flex:none; }
+.dc-meta { font-size:14px; } .dc-meta b{color:#fff} .dc-meta span{color:#949ba4; font-size:12px; margin-left:6px;}
+.dc-feats { background:var(--hatch-widget-surface); border:1px solid var(--hatch-widget-border); border-radius:10px; padding:12px 16px; max-width:640px; margin:-14px auto 30px; box-sizing:border-box; }
+.dc-feats h4 { margin:0 0 8px; font-size:14px; color:var(--hatch-widget-text); }
+.dc-feats ul { margin:0; padding-left:18px; font-size:13px; color:var(--hatch-widget-muted); line-height:1.6; }
+.dc-feats li b { color:var(--hatch-widget-text); font-weight:600; }
+.dc-sec { color:var(--hatch-widget-text); max-width:640px; margin:0 auto 10px; font-size:15px; font-weight:700; }
+.dc-note { color:var(--hatch-widget-muted); max-width:640px; margin:0 auto 26px; font-size:12px; }
+</style>
+
+<div class="dc-sec">1 &middot; Team Verification Panel <span style="font-weight:400;font-size:12px;color:var(--hatch-widget-muted)">— posted with /setup-panel</span></div>
+<div class="dc">
+  <div class="dc-head"><div class="dc-avatar">S</div><div class="dc-meta"><b>Scrims Bot</b><span>BOT &middot; today at 2:30 PM</span></div></div>
+  <div class="dc-msg">
+    <div class="dc-embed c-green">
+      <div class="dc-title">&#x1F6E1;&#xFE0F; Scrims Team Verification</div>
+      <div class="dc-desc">Register your squad to get verified for scrims.
+
+&#x1F9FE; <b>Register Team</b> — create your team &amp; get the verified role
+&#x270F;&#xFE0F; <b>My Team</b> — team owners can edit their roster/info
+&#x1F6AA; <b>Leave Team</b> — teammates can leave a team they joined
+
+Only one Discord account per player, no fake/duplicate tags. UIDs are automatically checked against the in-game name.</div>
+    </div>
+    <div class="dc-row">
+      <button class="dc-btn success">&#x1F9FE; Register Team</button>
+      <button class="dc-btn primary">&#x270F;&#xFE0F; My Team</button>
+    </div>
+    <div class="dc-row">
+      <button class="dc-btn secondary">&#x1F6AA; Leave Team</button>
+      <button class="dc-btn secondary">&#x1F6E0;&#xFE0F; Team Manager</button>
+    </div>
+  </div>
+</div>
+<div class="dc-feats"><h4>What each button does</h4><ul>
+<li><b>Register Team</b> — 3-step wizard: (1) form with team name, tag, email, phone; (2) multi-select 4–6 Discord players; (3) per-player IGN + BGMI UID board with Set P1/P2… Details buttons, Add/Remove Players, Back, Submit. UID/IGN uniqueness is checked automatically.</li>
+<li><b>My Team</b> — owner views team card, edits name/tag/email/phone/region, manages roster (add/remove players), syncs roles, disbands team.</li>
+<li><b>Leave Team</b> — teammate removes self from roster; owner can't leave without disbanding.</li>
+<li><b>Team Manager</b> — owner-only: edit info, add/remove players, sync roles, disband.</li>
+</ul></div>
+
+<div class="dc-sec">1b &middot; Team Verification — Player Details wizard (ephemeral, step 3)</div>
+<div class="dc">
+  <div class="dc-msg">
+    <div class="dc-embed c-blue">
+      <div class="dc-title">Ravens — Player Details</div>
+      <div class="dc-desc">&#x2705; <b>P1</b> @player1
+&#x21B3; IGN: <b>RAVENOP</b> · UID: <b>5123456789</b>
+&#x274C; <b>P2</b> @player2
+&#x21B3; IGN: — · UID: —
+
+&#x26A0;&#xFE0F; Set IGN + UID for 1 more player to continue.</div>
+    </div>
+    <div class="dc-row">
+      <button class="dc-btn success">Set P1 Details</button>
+      <button class="dc-btn secondary">Set P2 Details</button>
+    </div>
+    <div class="dc-row">
+      <button class="dc-btn secondary">Add/Remove Players</button>
+      <button class="dc-btn secondary">Back</button>
+      <button class="dc-btn secondary">Cancel</button>
+      <button class="dc-btn success">Submit</button>
+    </div>
+  </div>
+</div>
+
+<div class="dc-sec">2 &middot; Scrim Registration Panel</div>
+<div class="dc">
+  <div class="dc-head"><div class="dc-avatar">S</div><div class="dc-meta"><b>Scrims Bot</b><span>BOT &middot; today at 2:30 PM</span></div></div>
+  <div class="dc-msg">
+    <div class="dc-embed c-blue">
+      <div class="dc-title">&#x1F3AF; Scrims Registration</div>
+      <div class="dc-desc">Register your verified team for upcoming scrims.
+
+&#x2705; <b>Register for Scrim</b> — pick an open scrim &amp; lock your slot
+&#x1F4CB; <b>My Scrims</b> — view your team's scrim registrations
+&#x274C; <b>Cancel Registration</b> — withdraw from a scrim
+
+Only team owners can register. Slots are limited — first come, first served.</div>
+    </div>
+    <div class="dc-row">
+      <button class="dc-btn success">&#x2705; Register for Scrim</button>
+      <button class="dc-btn primary">&#x1F4CB; My Scrims</button>
+    </div>
+    <div class="dc-row">
+      <button class="dc-btn secondary">&#x274C; Cancel Registration</button>
+    </div>
+  </div>
+</div>
+<div class="dc-feats"><h4>What each button does</h4><ul>
+<li><b>Register for Scrim</b> — dropdown of open scrims (map, date/time IST, slots left); eligibility checks: team verified, roster meets team-size, no duplicate registration, slots available.</li>
+<li><b>My Scrims</b> — list of your registrations with scrim details, slot number and status (pending/approved).</li>
+<li><b>Cancel Registration</b> — withdraw; frees the slot for the next team.</li>
+</ul></div>
+
+<div class="dc-sec">3 &middot; Tournament Registration Panel</div>
+<div class="dc">
+  <div class="dc-head"><div class="dc-avatar">S</div><div class="dc-meta"><b>Scrims Bot</b><span>BOT &middot; today at 2:30 PM</span></div></div>
+  <div class="dc-msg">
+    <div class="dc-embed c-purple">
+      <div class="dc-title">&#x1F3C6; Tournament Registration</div>
+      <div class="dc-desc">Register your verified team for tournaments.
+
+&#x2705; <b>Register for Tournament</b> — pick an open tournament &amp; lock your slot
+&#x1F4CB; <b>My Tournaments</b> — view your team's tournament registrations
+&#x274C; <b>Cancel Registration</b> — withdraw from a tournament
+
+Only team owners can register. Check the tournament rules before registering.</div>
+    </div>
+    <div class="dc-row">
+      <button class="dc-btn success">&#x2705; Register for Tournament</button>
+      <button class="dc-btn primary">&#x1F4CB; My Tournaments</button>
+    </div>
+    <div class="dc-row">
+      <button class="dc-btn secondary">&#x274C; Cancel Registration</button>
+    </div>
+  </div>
+</div>
+<div class="dc-feats"><h4>What each button does</h4><ul>
+<li><b>Register for Tournament</b> — pick an open tournament, eligibility + slot checks, then auto-assigned <b>Group</b> and <b>Slot</b> numbers. Admins can also post a public announcement with a one-tap Register button.</li>
+<li><b>My Tournaments</b> — your tournament registrations with Group, Slot and status (pending/approved).</li>
+<li><b>Cancel Registration</b> — withdraw; slot freed.</li>
+</ul></div>
+
+<div class="dc-sec">3b &middot; Tournament announcement post + registration success (ephemeral)</div>
+<div class="dc">
+  <div class="dc-head"><div class="dc-avatar">S</div><div class="dc-meta"><b>Scrims Bot</b><span>BOT &middot; today at 2:30 PM</span></div></div>
+  <div class="dc-msg">
+    <div class="dc-embed c-purple">
+      <div class="dc-title">&#x1F3C6; Weekly Clash S2 — W-2</div>
+      <div class="dc-desc">Tap the Register button below to register for Weekly Clash S2 — Week 2.
+
+Format: <b>Squad TPP</b> · Date: 01-Oct 7:00 PM
+Maps: Erangel, Miramar · Slots: <b>10/20</b> (10 left)</div>
+    </div>
+    <div class="dc-row">
+      <button class="dc-btn primary">&#x2705; Register</button>
+    </div>
+  </div>
+</div>
+<div class="dc">
+  <div class="dc-msg">
+    <div class="dc-embed c-green">
+      <div class="dc-title">&#x1F389; Registration Successful</div>
+      <div class="dc-desc">Your team has been successfully registered:
+
+• Team Name: <b>Ravens</b>
+• Group Assigned: <b>Group 1</b>
+• Slot Assigned: <b>Slot 11</b></div>
+    </div>
+    <div class="dc-row">
+      <button class="dc-btn secondary">&#x1F517; IDP Group</button>
+    </div>
+  </div>
+</div>
+
+<div class="dc-sec">4 &middot; Admin Control Panel <span style="font-weight:400;font-size:12px;color:var(--hatch-widget-muted)">— visible in admin channel only</span></div>
+<div class="dc">
+  <div class="dc-head"><div class="dc-avatar">S</div><div class="dc-meta"><b>Scrims Bot</b><span>BOT &middot; today at 2:30 PM</span></div></div>
+  <div class="dc-msg">
+    <div class="dc-embed c-yellow">
+      <div class="dc-title">&#x2699;&#xFE0F; Admin Control Panel</div>
+      <div class="dc-desc">Tournament &amp; scrims operations — admins only.
+
+&#x1F5D3;&#xFE0F; <b>Create Event</b> — new scrim / tournament
+&#x1F39B;&#xFE0F; <b>Manage Events</b> — open, lock, go live, complete
+&#x1F4DD; <b>View Registrations</b> — approve / disqualify teams
+&#x1F465; <b>Manage Teams</b> — view, edit, suspend, disband
+&#x1F3AE; <b>Manage Players</b> — look up &amp; manage players</div>
+    </div>
+    <div class="dc-row">
+      <button class="dc-btn primary">&#x1F5D3;&#xFE0F; Create Event</button>
+      <button class="dc-btn primary">&#x1F39B;&#xFE0F; Manage Events</button>
+      <button class="dc-btn primary">&#x1F4DD; View Registrations</button>
+      <button class="dc-btn secondary">&#x1F465; Manage Teams</button>
+      <button class="dc-btn secondary">&#x1F3AE; Manage Players</button>
+    </div>
+    <div class="dc-row">
+      <button class="dc-btn secondary">&#x1F4E2; Announce</button>
+      <button class="dc-btn secondary">&#x1F512; Lock / Unlock</button>
+      <button class="dc-btn secondary">&#x2709;&#xFE0F; DM Owners</button>
+      <button class="dc-btn secondary">&#x1F9FE; Logs</button>
+      <button class="dc-btn secondary">&#x2699;&#xFE0F; Settings</button>
+    </div>
+  </div>
+</div>
+<div class="dc-feats"><h4>What each button does</h4><ul>
+<li><b>Create Event</b> — two-step form: scrim or tournament, name, date/time IST, slots, maps (Erangel / Miramar / Rondo), team size; then description/rules, region, and an optional IDP/WhatsApp group link. Opening registration prompts for a channel to post the public Register announcement.</li>
+<li><b>Manage Events</b> — change state: open, lock, go live, complete, cancel, delete; repost the registration announcement.</li>
+<li><b>View Registrations</b> — approve, disqualify or remove team registrations per event.</li>
+<li><b>Manage Teams / Manage Players</b> — look up any team or player, edit, suspend, disband.</li>
+<li><b>Announce</b> — post an announcement embed to a chosen channel.</li>
+<li><b>Lock / Unlock</b> — lock or unlock a channel during live matches.</li>
+<li><b>DM Owners</b> — broadcast a DM to all verified team owners, with a success/failure report.</li>
+<li><b>Logs</b> — audit log of admin actions. <b>Settings</b> — General (team size, substitutes, maps, team-ID prefix, admin roles) and Registration (teams per group for auto group/slot assignment).</li>
+</ul></div>
+
+<div class="dc-note">Preview rendered from the bot's actual panel code — this is exactly what gets posted in Discord via /setup-panel. No payments, no ban/kick features.</div>

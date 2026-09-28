@@ -1,0 +1,464 @@
+const {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  StringSelectMenuBuilder,
+  EmbedBuilder,
+} = require('discord.js');
+const { prisma } = require('../db');
+const {
+  getOrCreateUser,
+  getOwnedTeam,
+  getSettings,
+  starterCount,
+  errorEmbed,
+  successEmbed,
+  formatIST,
+  audit,
+} = require('../utils');
+
+async function handle(interaction) {
+  try {
+    if (interaction.isButton()) return handleButton(interaction);
+    if (interaction.isStringSelectMenu()) return handleSelect(interaction);
+  } catch (err) {
+    console.error('[events] error:', err);
+    try {
+      if (interaction.deferred) {
+        await interaction.editReply({ content: null, embeds: [errorEmbed('Something went wrong. Please try again.')], components: [] });
+      } else if (!interaction.replied) {
+        await interaction.reply({ embeds: [errorEmbed('Something went wrong. Please try again.')], ephemeral: true });
+      }
+    } catch {}
+  }
+}
+
+const labelFor = (type) => (type === 'SCRIM' ? 'scrim' : 'tournament');
+
+async function slotsTaken(eventId) {
+  return prisma.tournamentRegistration.count({
+    where: { tournamentId: eventId, status: { in: ['PENDING', 'APPROVED'] } },
+  });
+}
+
+/** Shared eligibility check. Returns a problem string, or null when the team can register. */
+async function checkEligibility(event, team) {
+  if (!team) return 'Please register a team first (Team Verification panel).';
+  if (team.status !== 'ACTIVE') return 'Your team is not active. Contact an admin.';
+  if (starterCount(team) < event.teamSize)
+    return `Your roster needs at least ${event.teamSize} starters (you have ${starterCount(team)}). Add players from Team Manager.`;
+  if (event.region && team.region && event.region.toLowerCase() !== team.region.toLowerCase())
+    return `This event is restricted to region **${event.region}**.`;
+  const existing = await prisma.tournamentRegistration.findFirst({
+    where: { tournamentId: event.id, teamId: team.id, status: { not: 'REMOVED' } },
+  });
+  if (existing) return 'Your team is already registered for this event.';
+  const taken = await slotsTaken(event.id);
+  if (taken >= event.teamLimit) return 'All slots for this event are full.';
+  return null;
+}
+
+/** Create the registration with auto-assigned slot + group numbers. Retries on slot races. */
+async function createRegistrationWithSlot(event, team, dbUser, groupSize) {
+  const size = Math.max(groupSize || 20, 1);
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      return await prisma.$transaction(async (tx) => {
+        const taken = await tx.tournamentRegistration.count({
+          where: { tournamentId: event.id, status: { in: ['PENDING', 'APPROVED'] } },
+        });
+        if (taken >= event.teamLimit) throw new Error('FULL');
+        const slotNo = taken + 1;
+        const groupNo = Math.ceil(slotNo / size);
+        return tx.tournamentRegistration.create({
+          data: { tournamentId: event.id, teamId: team.id, registeredBy: dbUser.id, status: 'PENDING', slotNo, groupNo },
+        });
+      });
+    } catch (e) {
+      if (e.message === 'FULL') throw new Error('Slots just filled up — better luck next time.');
+      if (e.code === 'P2002') {
+        // (tournamentId, teamId) duplicate -> already registered; (tournamentId, slotNo) -> race, retry
+        const dupTeam = await prisma.tournamentRegistration.findFirst({
+          where: { tournamentId: event.id, teamId: team.id, status: { not: 'REMOVED' } },
+        });
+        if (dupTeam) throw new Error('Your team is already registered for this event.');
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw new Error('Could not assign a slot — please try again.');
+}
+
+/** True when the event has a scheduled registration start that hasn't arrived yet. */
+function regNotStarted(event) {
+  return !!(event.regStartsAt && event.regStartsAt > new Date());
+}
+
+function regStartsInMessage(event) {
+  const ts = Math.floor(new Date(event.regStartsAt).getTime() / 1000);
+  return `Registration for **${event.name}** opens <t:${ts}:F>.`;
+}
+
+function registrationSuccessEmbed(team, event, reg) {
+  const embed = new EmbedBuilder()
+    .setColor(0x57f287)
+    .setTitle('🎉 Registration Successful')
+    .setDescription(
+      'Your team has been successfully registered:\n\n' +
+        `• Team Name: **${team.name}**\n` +
+        `• Group Assigned: \`Group ${reg.groupNo}\`\n` +
+        `• Slot Assigned: \`Slot ${reg.slotNo}\`` +
+        (event.successMessage ? `\n\n💬 ${event.successMessage}` : '')
+    );
+  return embed;
+}
+
+/** Success-role grant + log-channel post after a registration. Never throws. */
+async function applyRegistrationExtras(interaction, event, team, reg) {
+  const guild = interaction.guild;
+  if (!guild) return;
+  if (event.successRoleId) {
+    try {
+      const member = await guild.members.fetch(interaction.user.id);
+      if (member) await member.roles.add(event.successRoleId);
+    } catch (e) {
+      console.error('[events] success-role assign failed:', e.message);
+    }
+  }
+  if (event.logChannelId) {
+    try {
+      const ch = await guild.channels.fetch(event.logChannelId).catch(() => null);
+      if (ch && ch.isTextBased()) {
+        await ch.send({
+          embeds: [
+            new EmbedBuilder()
+              .setColor(0x57f287)
+              .setTitle('✅ New Registration')
+              .setDescription(
+                `**[${team.tag}] ${team.name}** registered for **${event.name}**\nGroup ${reg.groupNo} · Slot ${reg.slotNo} · <@${interaction.user.id}>`
+              ),
+          ],
+        });
+      }
+    } catch (e) {
+      console.error('[events] registration log failed:', e.message);
+    }
+  }
+}
+
+function successComponents(event) {
+  const rows = [];
+  if (event.inviteUrl) {
+    rows.push(
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setLabel('IDP Group').setStyle(ButtonStyle.Link).setURL(event.inviteUrl).setEmoji('🔗')
+      )
+    );
+  }
+  return rows;
+}
+
+/** Public announcement post for an event's registration channel (mirrors the reference style). */
+function registrationPostPayload(event, taken) {
+  const left = Math.max(event.teamLimit - taken, 0);
+  const embed = new EmbedBuilder()
+    .setColor(event.type === 'SCRIM' ? 0x5865f2 : 0x9b59b6)
+    .setTitle(`${event.type === 'SCRIM' ? '🎯' : '🏆'} ${event.name}`)
+    .setDescription(
+      (event.description || `Tap the Register button below to register for ${event.name}.`) +
+        `\n\nFormat: \`${event.format}\` · Date: ${formatIST(event.date)}\nMaps: ${event.maps.length ? event.maps.join(', ') : '—'} · Slots: **${taken}/${event.teamLimit}** (${left} left)`
+    );
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`event:registerpost:${event.id}`)
+      .setLabel('Register')
+      .setStyle(ButtonStyle.Primary)
+      .setEmoji('✅')
+      .setDisabled(left <= 0)
+  );
+  return { embeds: [embed], components: [row] };
+}
+
+/** Post (or refresh) the registration announcement in a channel; records the message id on the event. */
+async function postRegistrationAnnouncement(client, guildId, channelId, eventId) {
+  const event = await prisma.tournament.findUnique({ where: { id: eventId } });
+  if (!event) throw new Error('Event not found.');
+  const guild = await client.guilds.fetch(guildId);
+  const channel = await guild.channels.fetch(channelId).catch(() => null);
+  if (!channel || !channel.isTextBased()) throw new Error('Channel not found.');
+  const taken = await slotsTaken(event.id);
+  // delete the old announcement if we posted one before
+  if (event.announceMsgId && event.announceChannelId) {
+    const oldCh = await guild.channels.fetch(event.announceChannelId).catch(() => null);
+    if (oldCh && oldCh.isTextBased()) {
+      const oldMsg = await oldCh.messages.fetch(event.announceMsgId).catch(() => null);
+      if (oldMsg) await oldMsg.delete().catch(() => {});
+    }
+  }
+  const msg = await channel.send(registrationPostPayload(event, taken));
+  await prisma.tournament.update({
+    where: { id: event.id },
+    data: { announceChannelId: channel.id, announceMsgId: msg.id, regChannelId: channel.id },
+  });
+  return msg;
+}
+
+function eventCardEmbed(event, taken) {
+  const left = Math.max(event.teamLimit - taken, 0);
+  return new EmbedBuilder()
+    .setColor(event.type === 'SCRIM' ? 0x5865f2 : 0x9b59b6)
+    .setTitle(`${event.type === 'SCRIM' ? '🎯' : '🏆'} ${event.name}`)
+    .setDescription(event.description || '—')
+    .addFields(
+      { name: 'Format', value: event.format, inline: true },
+      { name: 'Date', value: formatIST(event.date), inline: true },
+      { name: 'Maps', value: event.maps.length ? event.maps.join(', ') : '—', inline: true },
+      { name: 'Team Size', value: String(event.teamSize), inline: true },
+      { name: 'Slots', value: `${taken}/${event.teamLimit} (${left} left)`, inline: true },
+      { name: 'Region', value: event.region || 'Open', inline: true }
+    );
+}
+
+// ---------- registration entry points ----------
+
+async function openEventPicker(interaction, type) {
+  // Acknowledge FIRST — the queries below can take a while on a remote DB.
+  await interaction.deferReply({ ephemeral: true });
+  const events = await prisma.tournament.findMany({
+    where: {
+      type,
+      status: 'OPEN',
+      // hide events whose scheduled registration start is still in the future
+      AND: [{ OR: [{ regStartsAt: null }, { regStartsAt: { lte: new Date() } }] }],
+      OR: [{ date: null }, { date: { gte: new Date() } }],
+    },
+    orderBy: [{ date: 'asc' }, { createdAt: 'asc' }],
+    take: 25,
+  });
+  if (!events.length) {
+    return interaction.editReply({
+      embeds: [errorEmbed(`No open ${labelFor(type)}s right now. Check back later.`)],
+    });
+  }
+  // Single grouped query instead of one count per event.
+  const counts = await prisma.tournamentRegistration.groupBy({
+    by: ['tournamentId'],
+    where: { tournamentId: { in: events.map((e) => e.id) }, status: { in: ['PENDING', 'APPROVED'] } },
+    _count: { _all: true },
+  });
+  const takenById = new Map(counts.map((c) => [c.tournamentId, c._count._all]));
+  const options = events.map((e) => {
+    const taken = takenById.get(e.id) || 0;
+    return {
+      label: e.name.slice(0, 100),
+      value: e.id,
+      description: `${formatIST(e.date)} • ${Math.max(e.teamLimit - taken, 0)} slots left`.slice(0, 100),
+    };
+  });
+  const row = new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(`event:pick:${type}`)
+      .setPlaceholder(`Select a ${labelFor(type)}`)
+      .addOptions(options)
+  );
+  return interaction.editReply({
+    content: `Select a ${labelFor(type)} to register for:`,
+    components: [row],
+  });
+}
+
+async function showEventDetail(interaction, eventId) {
+  await interaction.deferUpdate();
+  const event = await prisma.tournament.findUnique({ where: { id: eventId } });
+  if (!event || event.status !== 'OPEN') {
+    return interaction.editReply({ content: 'This event is no longer open for registration.', embeds: [], components: [] });
+  }
+  if (regNotStarted(event)) {
+    return interaction.editReply({ content: null, embeds: [errorEmbed(regStartsInMessage(event))], components: [] });
+  }
+  const dbUser = await getOrCreateUser(interaction.user);
+  const team = await getOwnedTeam(dbUser.id);
+
+  const problem = await checkEligibility(event, team);
+  if (problem) {
+    return interaction.editReply({ content: null, embeds: [errorEmbed(problem)], components: [] });
+  }
+
+  const taken = await slotsTaken(event.id);
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`event:confirm:${event.id}`).setLabel('Confirm Registration').setStyle(ButtonStyle.Success).setEmoji('✅'),
+    new ButtonBuilder().setCustomId('event:cancel').setLabel('Cancel').setStyle(ButtonStyle.Secondary)
+  );
+  return interaction.editReply({
+    content: `Register **${team.name} [${team.tag}]** for this ${labelFor(event.type)}?`,
+    embeds: [eventCardEmbed(event, taken)],
+    components: [row],
+  });
+}
+
+async function confirmRegistration(interaction, eventId) {
+  await interaction.deferUpdate();
+  const event = await prisma.tournament.findUnique({ where: { id: eventId } });
+  if (!event || event.status !== 'OPEN') {
+    return interaction.editReply({ content: 'This event is no longer open.', embeds: [], components: [] });
+  }
+  if (regNotStarted(event)) {
+    return interaction.editReply({ content: null, embeds: [errorEmbed(regStartsInMessage(event))], components: [] });
+  }
+  const dbUser = await getOrCreateUser(interaction.user);
+  const team = await getOwnedTeam(dbUser.id);
+  const problem = await checkEligibility(event, team);
+  if (problem) {
+    return interaction.editReply({ content: null, embeds: [errorEmbed(problem)], components: [] });
+  }
+  const settings = await getSettings(interaction.guildId);
+  let reg;
+  try {
+    reg = await createRegistrationWithSlot(event, team, dbUser, settings.groupSize);
+  } catch (e) {
+    return interaction.editReply({ content: null, embeds: [errorEmbed(e.message)], components: [] });
+  }
+  await audit('EVENT_REGISTER', interaction.user.id, `${team.tag} registered for ${event.name} (${event.type}) — Group ${reg.groupNo}, Slot ${reg.slotNo}`);
+  await interaction.editReply({
+    content: null,
+    embeds: [registrationSuccessEmbed(team, event, reg)],
+    components: successComponents(event),
+  });
+  await applyRegistrationExtras(interaction, event, team, reg);
+}
+
+/** Direct registration from the announcement post's Register button. */
+async function registerFromPost(interaction, eventId) {
+  await interaction.deferReply({ ephemeral: true });
+  const event = await prisma.tournament.findUnique({ where: { id: eventId } });
+  if (!event || event.status !== 'OPEN') {
+    return interaction.editReply({ embeds: [errorEmbed('This event is no longer open for registration.')] });
+  }
+  if (regNotStarted(event)) {
+    return interaction.editReply({ embeds: [errorEmbed(regStartsInMessage(event))] });
+  }
+  const dbUser = await getOrCreateUser(interaction.user);
+  const team = await getOwnedTeam(dbUser.id);
+  const problem = await checkEligibility(event, team);
+  if (problem) {
+    return interaction.editReply({ embeds: [errorEmbed(problem)] });
+  }
+  const settings = await getSettings(interaction.guildId);
+  let reg;
+  try {
+    reg = await createRegistrationWithSlot(event, team, dbUser, settings.groupSize);
+  } catch (e) {
+    return interaction.editReply({ embeds: [errorEmbed(e.message)] });
+  }
+  await audit('EVENT_REGISTER', interaction.user.id, `${team.tag} registered for ${event.name} (${event.type}) via announcement — Group ${reg.groupNo}, Slot ${reg.slotNo}`);
+  await interaction.editReply({
+    embeds: [registrationSuccessEmbed(team, event, reg)],
+    components: successComponents(event),
+  });
+  await applyRegistrationExtras(interaction, event, team, reg);
+}
+
+// ---------- my registrations / cancel ----------
+
+const statusEmoji = { PENDING: '⏳', APPROVED: '✅', DISQUALIFIED: '⛔', REMOVED: '—' };
+
+async function listMyRegs(interaction, type) {
+  await interaction.deferReply({ ephemeral: true });
+  const dbUser = await getOrCreateUser(interaction.user);
+  const team = await getOwnedTeam(dbUser.id);
+  if (!team) return interaction.editReply({ embeds: [errorEmbed('You do not own a team.')] });
+  const regs = await prisma.tournamentRegistration.findMany({
+    where: { teamId: team.id, status: { not: 'REMOVED' }, tournament: { type } },
+    include: { tournament: true },
+    orderBy: { registeredAt: 'desc' },
+    take: 20,
+  });
+  if (!regs.length) {
+    return interaction.editReply({ embeds: [errorEmbed(`No ${labelFor(type)} registrations yet.`)] });
+  }
+  const lines = regs.map(
+    (r) => `${statusEmoji[r.status] || '•'} **${r.tournament.name}** — Group ${r.groupNo} · Slot ${r.slotNo} — ${formatIST(r.tournament.date)} — \`${r.status}\``
+  );
+  return interaction.editReply({
+    embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle(`My ${type === 'SCRIM' ? 'Scrims' : 'Tournaments'} — ${team.tag}`).setDescription(lines.join('\n'))],
+  });
+}
+
+async function openUnregisterPicker(interaction, type) {
+  await interaction.deferReply({ ephemeral: true });
+  const dbUser = await getOrCreateUser(interaction.user);
+  const team = await getOwnedTeam(dbUser.id);
+  if (!team) return interaction.editReply({ embeds: [errorEmbed('You do not own a team.')] });
+  const regs = await prisma.tournamentRegistration.findMany({
+    where: { teamId: team.id, status: { in: ['PENDING', 'APPROVED'] }, tournament: { type } },
+    include: { tournament: true },
+    take: 25,
+  });
+  if (!regs.length) return interaction.editReply({ embeds: [errorEmbed('Nothing to cancel.')] });
+  const row = new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(`event:unreg:pick:${type}`)
+      .setPlaceholder('Select a registration to cancel')
+      .addOptions(
+        regs.map((r) => ({
+          label: r.tournament.name.slice(0, 100),
+          value: r.id,
+          description: `${formatIST(r.tournament.date)} • ${r.status}`.slice(0, 100),
+        }))
+      )
+  );
+  return interaction.editReply({ content: 'Select a registration to cancel:', components: [row] });
+}
+
+// ---------- routers ----------
+
+async function handleButton(interaction) {
+  const id = interaction.customId;
+  if (id === 'scrim:register') return openEventPicker(interaction, 'SCRIM');
+  if (id === 'tournament:register') return openEventPicker(interaction, 'TOURNAMENT');
+  if (id === 'scrim:my') return listMyRegs(interaction, 'SCRIM');
+  if (id === 'tournament:my') return listMyRegs(interaction, 'TOURNAMENT');
+  if (id === 'scrim:unregister') return openUnregisterPicker(interaction, 'SCRIM');
+  if (id === 'tournament:unregister') return openUnregisterPicker(interaction, 'TOURNAMENT');
+  if (id === 'event:cancel') return interaction.update({ content: 'Cancelled.', embeds: [], components: [] });
+  if (id.startsWith('event:confirm:')) return confirmRegistration(interaction, id.split(':')[2]);
+  if (id.startsWith('event:registerpost:')) return registerFromPost(interaction, id.split(':')[2]);
+  if (id.startsWith('event:unreg:yes:')) {
+    await interaction.deferUpdate();
+    const regId = id.split(':')[3];
+    const dbUser = await getOrCreateUser(interaction.user);
+    const team = await getOwnedTeam(dbUser.id);
+    const reg = await prisma.tournamentRegistration.findFirst({
+      where: { id: regId, teamId: team?.id, status: { in: ['PENDING', 'APPROVED'] } },
+      include: { tournament: true },
+    });
+    if (!reg) return interaction.editReply({ content: 'Registration not found.', embeds: [], components: [] });
+    await prisma.tournamentRegistration.update({ where: { id: reg.id }, data: { status: 'REMOVED' } });
+    await audit('EVENT_UNREGISTER', interaction.user.id, `${team.tag} withdrew from ${reg.tournament.name}`);
+    return interaction.editReply({ content: `✅ Registration for **${reg.tournament.name}** cancelled.`, embeds: [], components: [] });
+  }
+  if (id === 'event:unreg:no') return interaction.update({ content: 'Cancelled.', embeds: [], components: [] });
+}
+
+async function handleSelect(interaction) {
+  const id = interaction.customId;
+  if (id.startsWith('event:pick:')) return showEventDetail(interaction, interaction.values[0]);
+  if (id.startsWith('event:unreg:pick:')) {
+    await interaction.deferUpdate();
+    const regId = interaction.values[0];
+    const reg = await prisma.tournamentRegistration.findUnique({ where: { id: regId }, include: { tournament: true } });
+    if (!reg) return interaction.editReply({ content: 'Registration not found.', embeds: [], components: [] });
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`event:unreg:yes:${reg.id}`).setLabel('Yes, cancel it').setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId('event:unreg:no').setLabel('Keep it').setStyle(ButtonStyle.Secondary)
+    );
+    return interaction.editReply({
+      content: `Cancel registration for **${reg.tournament.name}**?`,
+      embeds: [],
+      components: [row],
+    });
+  }
+}
+
+module.exports = { handle, postRegistrationAnnouncement, registrationPostPayload, slotsTaken, createRegistrationWithSlot, checkEligibility };
