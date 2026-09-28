@@ -8,7 +8,7 @@ const { prisma } = require('./db');
 const { handleInteraction } = require('./router');
 
 // Build tag — bump when shipping a fix so the console shows which code is live.
-const BUILD = '2026-09-28.createflow-1';
+const BUILD = '2026-09-28.idpflow-1';
 console.log(`🤖 scrims-bot ${BUILD} starting...`);
 
 if (!config.token) {
@@ -52,10 +52,33 @@ async function boot() {
       ['Tournament', 'successRoleId', 'TEXT'],
       ['Tournament', 'successMessage', 'TEXT'],
       ['Tournament', 'tagsRequired', 'INTEGER NOT NULL DEFAULT 4'],
+      ['Tournament', 'teamsPerGroup', 'INTEGER'],
+      ['Tournament', 'idpCategoryId', 'TEXT'],
       ['TournamentRegistration', 'taggedDiscordIds', `TEXT[] NOT NULL DEFAULT '{}'`],
+      ['TournamentRegistration', 'qualified', 'BOOLEAN NOT NULL DEFAULT false'],
+      ['GuildSettings', 'logTeamVerify', 'TEXT'],
+      ['GuildSettings', 'logTourneyReg', 'TEXT'],
+      ['GuildSettings', 'logScrimReg', 'TEXT'],
+      ['GuildSettings', 'logAdminActivity', 'TEXT'],
     ]) {
       await prisma.$executeRawUnsafe(`ALTER TABLE "${table}" ADD COLUMN IF NOT EXISTS "${col}" ${type}`);
     }
+    // IdpGroup / IdpMatch tables (matches prisma/migrations/*_logs_idp_fields)
+    await prisma.$executeRawUnsafe(`CREATE TABLE IF NOT EXISTS "IdpGroup" (
+      "id" TEXT NOT NULL, "tournamentId" TEXT NOT NULL, "groupNo" INTEGER NOT NULL,
+      "channelId" TEXT NOT NULL, "categoryId" TEXT, "panelMsgId" TEXT,
+      "locked" BOOLEAN NOT NULL DEFAULT true, "matchesDate" TIMESTAMP(3),
+      "totalMatches" INTEGER NOT NULL DEFAULT 1, "idpRoleHolderId" TEXT,
+      "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      CONSTRAINT "IdpGroup_pkey" PRIMARY KEY ("id"))`);
+    await prisma.$executeRawUnsafe(`CREATE UNIQUE INDEX IF NOT EXISTS "IdpGroup_channelId_key" ON "IdpGroup"("channelId")`);
+    await prisma.$executeRawUnsafe(`CREATE UNIQUE INDEX IF NOT EXISTS "IdpGroup_tournamentId_groupNo_key" ON "IdpGroup"("tournamentId", "groupNo")`);
+    await prisma.$executeRawUnsafe(`CREATE TABLE IF NOT EXISTS "IdpMatch" (
+      "id" TEXT NOT NULL, "idpGroupId" TEXT NOT NULL, "matchNo" INTEGER NOT NULL,
+      "map" TEXT NOT NULL DEFAULT 'Erangel', "idpAt" TEXT, "startAt" TEXT,
+      "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      CONSTRAINT "IdpMatch_pkey" PRIMARY KEY ("id"))`);
+    await prisma.$executeRawUnsafe(`CREATE UNIQUE INDEX IF NOT EXISTS "IdpMatch_idpGroupId_matchNo_key" ON "IdpMatch"("idpGroupId", "matchNo")`);
     console.log('✅ Database schema up to date');
     await prisma.$queryRaw`SELECT 1`;
     console.log('✅ Database connected');

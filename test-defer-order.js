@@ -28,6 +28,17 @@ function delegate(model) {
           if (op === 'upsert' && model === 'user') return { id: 'dbu1' };
           if (op === 'findFirst' && model === 'team') return null;
           if (op === 'findUnique' && model === 'guildSettings') return null;
+          if (op === 'findUnique' && model === 'idpGroup') {
+            return {
+              id: 'g1', tournamentId: 'e1', groupNo: 1, channelId: 'c1', categoryId: 'cat1',
+              locked: true, matchesDate: null, totalMatches: 1, panelMsgId: 'm1', idpRoleHolderId: null,
+              tournament: { id: 'e1', name: 'Test Tourney', type: 'TOURNAMENT', teamsPerGroup: 20 },
+              matches: [{ id: 'm1', idpGroupId: 'g1', matchNo: 1, map: 'Erangel', idpAt: null, startAt: null }],
+            };
+          }
+          if (op === 'findUnique' && model === 'idpMatch') {
+            return { id: 'm1', idpGroupId: 'g1', matchNo: 1, map: 'Erangel', idpAt: null, startAt: null };
+          }
           if (op === 'create' && model === 'guildSettings') {
             return { guildId: 'g1', maps: ['Erangel'], teamSize: 4, maxSubs: 2, teamIdPrefix: 'BR', adminRoleIds: [], groupSize: 20 };
           }
@@ -87,6 +98,8 @@ function mockInteraction(kind, customId, fields = {}) {
 const teamFlows = require('./src/flows/team.js');
 const eventFlows = require('./src/flows/events.js');
 const adminFlows = require('./src/flows/admin.js');
+
+const idpFlows = require('./src/flows/idp.js');
 
 const cases = [
   // [label, flow, kind, customId, fields]
@@ -152,6 +165,27 @@ const cases = [
   ['admin:settings:reg:modal', adminFlows, 'modal', 'admin:settings:reg:modal', { s_groupsize: '20' }],
   ['admin:team:edit:modal', adminFlows, 'modal', 'admin:team:edit:modal:t1', { t_name: 'x', t_tag: 'TT', t_logo: '', t_region: '' }],
   ['admin:announce:modal', adminFlows, 'modal', 'admin:announce:modal:c1', { a_title: 'T', a_message: 'M' }],
+  ['admin:logs:pick (select)', adminFlows, 'select', 'admin:log:pick'],
+  ['admin:log:ch (select)', adminFlows, 'select', 'admin:log:ch:verify'],
+  ['admin:log:clear', adminFlows, 'button', 'admin:log:clear:verify'],
+  ['admin:logs:activity', adminFlows, 'button', 'admin:logs:activity'],
+  ['admin:idp:ask', adminFlows, 'button', 'admin:idp:ask:e1'],
+  ['admin:idp:no', adminFlows, 'button', 'admin:idp:no:e1'],
+  ['admin:idp:yes', adminFlows, 'button', 'admin:idp:yes:e1'],
+  ['admin:regedit:submit:tpg', adminFlows, 'modal', 'admin:regedit:submit:tpg:e1', { f_value: '16' }],
+  ['idp:edit', idpFlows, 'button', 'idp:edit:g1'],
+  ['idp:edate', idpFlows, 'button', 'idp:edate:g1'],
+  ['idp:slotlist', idpFlows, 'button', 'idp:slotlist:g1'],
+  ['idp:punish', idpFlows, 'button', 'idp:punish:g1'],
+  ['idp:qualify', idpFlows, 'button', 'idp:qualify:g1'],
+  ['idp:cancelslot', idpFlows, 'button', 'idp:cancelslot:g1'],
+  ['idp:remind', idpFlows, 'button', 'idp:remind:g1'],
+  ['idp:lock', idpFlows, 'button', 'idp:lock:g1'],
+  ['idp:transferrole', idpFlows, 'button', 'idp:transferrole:g1'],
+  ['idp:ematch (select)', idpFlows, 'select', 'idp:ematch:g1'],
+  ['idp:ematch:modal', idpFlows, 'modal', 'idp:ematch:modal:m1', { m_map: 'Miramar', m_idpat: '1:00 PM', m_startat: '1:10 PM' }],
+  ['idp:edate:modal', idpFlows, 'modal', 'idp:edate:modal:g1', { d_date: '2026-10-05' }],
+  ['idp:remind:modal', idpFlows, 'modal', 'idp:remind:modal:g1', { r_title: 'T', r_message: 'M' }],
 ];
 
 (async () => {
@@ -163,7 +197,9 @@ const cases = [
     const deferIdx = calls.findIndex((c) => c === 'deferReply' || c === 'deferUpdate' || c === 'showModal' || c === 'reply' || c === 'update');
     const prismaIdx = calls.findIndex((c) => c.startsWith('prisma.'));
     const firstAck = deferIdx === -1 ? '(none)' : calls[deferIdx];
-    const ok = prismaIdx === -1 || (deferIdx !== -1 && deferIdx < prismaIdx);
+    // showModal must be the first ack (Discord forbids defer-then-modal), so it
+    // is allowed as the first acknowledge even if a quick DB read preceded it.
+    const ok = prismaIdx === -1 || (deferIdx !== -1 && deferIdx < prismaIdx) || firstAck === 'showModal';
     if (ok) { pass++; }
     else { fail++; console.log(`FAIL ${label}: first ack=${firstAck}, order=${calls.slice(0, 6).join(' -> ')}`); }
   }

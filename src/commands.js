@@ -18,6 +18,20 @@ const commands = [
         )
     )
     .toJSON(),
+  new SlashCommandBuilder()
+    .setName('export')
+    .setDescription('Export team sheets as CSV (Admin only)')
+    .setDMPermission(false)
+    .addSubcommand((s) => s.setName('verified').setDescription('All verified teams — full details for Krafton India Esports'))
+    .addSubcommand((s) =>
+      s
+        .setName('tournament')
+        .setDescription('Tournament registration sheet with team + player details')
+        .addStringOption((o) =>
+          o.setName('name').setDescription('Tournament name').setRequired(true).setAutocomplete(true)
+        )
+    )
+    .toJSON(),
 ];
 
 module.exports = { commands };

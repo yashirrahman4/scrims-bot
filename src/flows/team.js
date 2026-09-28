@@ -24,6 +24,7 @@ const {
   successEmbed,
   rosterLines,
   audit,
+  sendLogEmbed,
 } = require('../utils');
 
 /** userId -> wizard draft: { name, tag, email, phone, playerIds: [discordId], details: { discordId: {ign, uid} }, createdAt } */
@@ -416,6 +417,20 @@ async function handleButton(interaction) {
       await audit('TEAM_REGISTER', interaction.user.id, `${team.tag} (${team.teamId}) verified with ${roster.length} players`);
       const starters = roster.filter((p) => p.role === 'PLAYER').length;
       const subs = roster.length - starters;
+      await sendLogEmbed(
+        interaction.client,
+        interaction.guildId,
+        settings.logTeamVerify,
+        new EmbedBuilder()
+          .setColor(0x57f287)
+          .setTitle('🛡️ Team Verified')
+          .setDescription(
+            `**${team.name} [${team.tag}]** — Team ID \`${team.teamId}\`\n` +
+              `Owner: <@${interaction.user.id}>\n` +
+              `Players: ${roster.length} (${starters} starters${subs ? `, ${subs} substitutes` : ''})\n\n` +
+              roster.map((p, i) => `P${i + 1} **${p.ign}** — UID \`${p.uid}\``).join('\n').slice(0, 1500)
+          )
+      );
       return interaction.editReply({
         content: null,
         embeds: [
@@ -527,6 +542,18 @@ async function handleButton(interaction) {
       if (role) await role.delete('Team disbanded').catch(() => {});
     }
     await audit('TEAM_DISBAND', interaction.user.id, `${team.tag} (${team.teamId}) disbanded`);
+    {
+      const logSettings = await getSettings(interaction.guildId);
+      await sendLogEmbed(
+        interaction.client,
+        interaction.guildId,
+        logSettings.logTeamVerify,
+        new EmbedBuilder()
+          .setColor(0xed4245)
+          .setTitle('🛡️ Team Disbanded')
+          .setDescription(`**${team.name} [${team.tag}]** — Team ID \`${team.teamId}\`\nOwner: <@${interaction.user.id}>`)
+      );
+    }
     return interaction.editReply({ content: `✅ **${team.name} [${team.tag}]** has been disbanded.`, embeds: [], components: [] });
   }
 }

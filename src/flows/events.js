@@ -16,6 +16,7 @@ const {
   successEmbed,
   formatIST,
   audit,
+  sendLogEmbed,
 } = require('../utils');
 
 async function handle(interaction) {
@@ -146,6 +147,22 @@ async function applyRegistrationExtras(interaction, event, team, reg) {
     } catch (e) {
       console.error('[events] registration log failed:', e.message);
     }
+  } else {
+    // Fall back to the global scrim/tournament registration log channels from Logs setup.
+    const settings = await getSettings(interaction.guildId);
+    const channelId = event.type === 'SCRIM' ? settings.logScrimReg : settings.logTourneyReg;
+    await sendLogEmbed(
+      interaction.client,
+      interaction.guildId,
+      channelId,
+      new EmbedBuilder()
+        .setColor(0x57f287)
+        .setTitle('✅ New Registration')
+        .setDescription(
+          `**[${team.tag}] ${team.name}** registered for **${event.name}**\nGroup ${reg.groupNo} · Slot ${reg.slotNo} · <@${interaction.user.id}>` +
+            (reg.taggedDiscordIds?.length ? `\n🏷️ Tagged: ${reg.taggedDiscordIds.map((id) => `<@${id}>`).join(' ')}` : '')
+        )
+    );
   }
 }
 
@@ -212,7 +229,7 @@ async function confirmRegistrationWithTags(interaction, eventId) {
   const settings = await getSettings(interaction.guildId);
   let reg;
   try {
-    reg = await createRegistrationWithSlot(event, team, dbUser, settings.groupSize, taggedIds);
+    reg = await createRegistrationWithSlot(event, team, dbUser, event.teamsPerGroup || settings.groupSize, taggedIds);
   } catch (e) {
     return interaction.editReply({ content: null, embeds: [errorEmbed(e.message)], components: [] });
   }
@@ -444,6 +461,19 @@ async function handleButton(interaction) {
     if (!reg) return interaction.editReply({ content: 'Registration not found.', embeds: [], components: [] });
     await prisma.tournamentRegistration.update({ where: { id: reg.id }, data: { status: 'REMOVED' } });
     await audit('EVENT_UNREGISTER', interaction.user.id, `${team.tag} withdrew from ${reg.tournament.name}`);
+    {
+      const settings = await getSettings(interaction.guildId);
+      const logChannelId = reg.tournament.logChannelId || (reg.tournament.type === 'SCRIM' ? settings.logScrimReg : settings.logTourneyReg);
+      await sendLogEmbed(
+        interaction.client,
+        interaction.guildId,
+        logChannelId,
+        new EmbedBuilder()
+          .setColor(0xf1c40f)
+          .setTitle('❌ Registration Withdrawn')
+          .setDescription(`**[${team.tag}] ${team.name}** withdrew from **${reg.tournament.name}** (was Group ${reg.groupNo} · Slot ${reg.slotNo}) · <@${interaction.user.id}>`)
+      );
+    }
     return interaction.editReply({ content: `✅ Registration for **${reg.tournament.name}** cancelled.`, embeds: [], components: [] });
   }
   if (id === 'event:unreg:no') return interaction.update({ content: 'Cancelled.', embeds: [], components: [] });

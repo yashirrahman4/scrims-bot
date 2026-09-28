@@ -102,6 +102,9 @@ model Tournament {
   logChannelId     String?
   successRoleId    String?
   successMessage   String?
+  teamsPerGroup    Int?
+  idpCategoryId    String?
+  idpGroups        IdpGroup[]
   registrations TournamentRegistration[]
   createdAt        DateTime                 @default(now())
 }
@@ -123,6 +126,7 @@ model TournamentRegistration {
   status       RegStatus  @default(PENDING)
   slotNo       Int
   groupNo      Int
+  qualified    Boolean  @default(false)
   taggedDiscordIds String[] @default([])
   registeredAt DateTime   @default(now())
 
@@ -147,6 +151,42 @@ model GuildSettings {
   teamIdPrefix String   @default("BR")
   maps         String[]
   groupSize    Int      @default(20)
+  // Log channels per action (set via Admin Panel -> Logs)
+  logTeamVerify    String?
+  logTourneyReg    String?
+  logScrimReg      String?
+  logAdminActivity String?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
+}
+
+model IdpGroup {
+  id          String     @id @default(cuid())
+  tournamentId String
+  tournament  Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  groupNo     Int
+  channelId   String     @unique
+  categoryId  String?
+  panelMsgId  String?
+  locked      Boolean    @default(true)
+  matchesDate DateTime?
+  totalMatches Int       @default(1)
+  idpRoleHolderId String?
+  matches     IdpMatch[]
+  createdAt   DateTime   @default(now())
+
+  @@unique([tournamentId, groupNo])
+}
+
+model IdpMatch {
+  id        String   @id @default(cuid())
+  idpGroupId String
+  idpGroup  IdpGroup @relation(fields: [idpGroupId], references: [id], onDelete: Cascade)
+  matchNo   Int
+  map       String   @default("Erangel")
+  idpAt     String?
+  startAt   String?
+  createdAt DateTime @default(now())
+
+  @@unique([idpGroupId, matchNo])
 }

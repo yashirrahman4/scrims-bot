@@ -21,8 +21,16 @@ const {
   parseDateTimeIST,
   rosterLines,
   audit,
+  postAdminLog,
 } = require('../utils');
 const { postRegistrationAnnouncement } = require('./events');
+const { createIdpGroups } = require('./idp');
+
+/** audit() + mirror to the Admin Activity log channel (never throws). */
+async function adminAudit(interaction, action, details) {
+  await audit(action, interaction.user.id, details);
+  await postAdminLog(interaction.client, interaction.guildId, action, interaction.user.id, details);
+}
 
 /** userId -> { title, message } pending DM broadcast drafts */
 const dmDrafts = new Map();
@@ -70,6 +78,7 @@ function eventDetailEmbed(event, taken) {
       { name: 'Status', value: `\`${event.status}\``, inline: true },
       { name: 'Date', value: formatIST(event.date), inline: true },
       { name: 'Tags Required', value: String(event.tagsRequired ?? 4), inline: true },
+      { name: 'Teams/Group', value: event.teamsPerGroup ? String(event.teamsPerGroup) : '—', inline: true },
       { name: 'Slots', value: `${taken}/${event.teamLimit}`, inline: true }
     );
 }
@@ -124,7 +133,7 @@ async function showEventManager(interaction, eventId, useUpdate) {
 
 // ---------- registration manager (mirrors the reference tournament manager) ----------
 
-function regManagerEmbed(event, taken) {
+function regManagerEmbed(event, taken, idpState) {
   const open = event.status === 'OPEN';
   const ch = (id) => (id ? `<#${id}>` : '—');
   return new EmbedBuilder()
@@ -135,6 +144,8 @@ function regManagerEmbed(event, taken) {
       { name: 'Total Slots', value: String(event.teamLimit), inline: true },
       { name: 'Registrations', value: String(taken), inline: true },
       { name: 'Tags Required', value: String(event.tagsRequired ?? 4), inline: true },
+      { name: 'Teams/Group', value: event.teamsPerGroup ? String(event.teamsPerGroup) : '—', inline: true },
+      { name: 'IDP Groups', value: idpState === 'done' ? '✅ Created' : idpState === 'partial' ? '⚠️ Partial' : 'Not created', inline: true },
       { name: 'Registration Starts', value: event.regStartsAt ? formatIST(event.regStartsAt) : '—', inline: true },
       { name: 'Registration Channel', value: ch(event.regChannelId), inline: true },
       { name: 'Log Channel', value: ch(event.logChannelId), inline: true },
@@ -144,7 +155,7 @@ function regManagerEmbed(event, taken) {
     .setFooter({ text: `ID: ${event.id}` });
 }
 
-function regManagerRows(event) {
+function regManagerRows(event, idpState) {
   const open = event.status === 'OPEN';
   const eb = (field, label, emoji) =>
     new ButtonBuilder().setCustomId(`admin:regedit:${field}:${event.id}`).setLabel(label).setStyle(ButtonStyle.Primary).setEmoji(emoji);
@@ -152,6 +163,7 @@ function regManagerRows(event) {
     eb('name', 'Edit Name', '✏️'),
     eb('slots', 'Edit Slots', '🎰'),
     eb('tags', 'Edit Tags', '🏷️'),
+    eb('tpg', 'Teams/Group', '👥'),
     eb('starttime', 'Edit Start Time', '🕓'),
     eb('successmsg', 'Edit Success Msg', '💬')
   );
@@ -159,6 +171,13 @@ function regManagerRows(event) {
     open
       ? new ButtonBuilder().setCustomId(`admin:reg:close:${event.id}`).setLabel('Close Registration').setStyle(ButtonStyle.Danger).setEmoji('🔒')
       : new ButtonBuilder().setCustomId(`admin:reg:start:${event.id}`).setLabel('Start Registration').setStyle(ButtonStyle.Success).setEmoji('▶️'),
+    idpState === 'done'
+      ? new ButtonBuilder().setCustomId('admin:idp:done').setLabel('IDP Groups Ready').setStyle(ButtonStyle.Secondary).setEmoji('🗂️').setDisabled(true)
+      : new ButtonBuilder()
+          .setCustomId(`admin:idp:ask:${event.id}`)
+          .setLabel(idpState === 'partial' ? 'Resume IDP Groups' : 'Create IDP Groups')
+          .setStyle(ButtonStyle.Primary)
+          .setEmoji('🗂️'),
     new ButtonBuilder().setCustomId(`admin:regmgr:back:${event.id}`).setLabel('Back').setStyle(ButtonStyle.Secondary).setEmoji('◀️')
   );
   const row3 = new ActionRowBuilder().addComponents(
@@ -189,7 +208,74 @@ async function showRegManager(interaction, eventId, useUpdate) {
     return useUpdate ? interaction.update(payload) : interaction.reply({ ...payload, ephemeral: true });
   }
   const taken = await regCount(event.id);
-  const payload = { content: null, embeds: [regManagerEmbed(event, taken)], components: regManagerRows(event) };
+  const settings = await getSettings(interaction.guildId);
+  const perGroup = event.teamsPerGroup || settings.groupSize || 20;
+  const nGroups = Math.max(Math.ceil(event.teamLimit / perGroup), 1);
+  const idpHave = event.idpCategoryId ? await prisma.idpGroup.count({ where: { tournamentId: event.id } }) : 0;
+  const idpState = !event.idpCategoryId ? 'none' : idpHave >= nGroups ? 'done' : 'partial';
+  const payload = { content: null, embeds: [regManagerEmbed(event, taken, idpState)], components: regManagerRows(event, idpState) };
+  if (interaction.deferred) return interaction.editReply(payload);
+  return useUpdate ? interaction.update(payload) : interaction.reply({ ...payload, ephemeral: true });
+}
+
+// ---------- log channel setup (Admin Panel -> Logs) ----------
+
+const LOG_ACTIONS = [
+  { key: 'teamverify', label: 'Team Verification', emoji: '🛡️', field: 'logTeamVerify', desc: 'Team verified, edited, disbanded' },
+  { key: 'tourneyreg', label: 'Tournament Registration', emoji: '🏆', field: 'logTourneyReg', desc: 'Tournament registrations & withdrawals' },
+  { key: 'scrimreg', label: 'Scrim Registration', emoji: '🎯', field: 'logScrimReg', desc: 'Scrim registrations & withdrawals' },
+  { key: 'admin', label: 'Admin Activity', emoji: '🛠️', field: 'logAdminActivity', desc: 'Admin actions, edits, announcements' },
+];
+
+function logSetupEmbed(settings) {
+  const ch = (id) => (id ? `<#${id}>` : '— not set —');
+  return new EmbedBuilder()
+    .setColor(0x5865f2)
+    .setTitle('📋 Log Channels')
+    .setDescription('Pick an action below, then choose the channel its logs go to.')
+    .addFields(LOG_ACTIONS.map((a) => ({ name: `${a.emoji} ${a.label}`, value: ch(settings[a.field]), inline: true })));
+}
+
+function logSetupBaseRows() {
+  const row1 = new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId('admin:log:pick')
+      .setPlaceholder('Select an action to configure')
+      .addOptions(
+        LOG_ACTIONS.map((a) => ({ label: a.label, value: a.key, description: a.desc.slice(0, 100), emoji: a.emoji }))
+      )
+  );
+  const row2 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('admin:logs:activity').setLabel('View Recent Activity').setStyle(ButtonStyle.Secondary).setEmoji('🧾'),
+    new ButtonBuilder().setCustomId('admin:logs:done').setLabel('Done').setStyle(ButtonStyle.Secondary)
+  );
+  return [row1, row2];
+}
+
+async function showLogSetup(interaction, useUpdate, actionKey) {
+  // Defer first when we will update a message — the DB reads below can be slow on a remote DB.
+  if (useUpdate && !interaction.deferred && !interaction.replied) await interaction.deferUpdate();
+  const settings = await getSettings(interaction.guildId);
+  const rows = logSetupBaseRows();
+  if (actionKey) {
+    const a = LOG_ACTIONS.find((x) => x.key === actionKey);
+    if (a) {
+      rows.splice(
+        1,
+        0,
+        new ActionRowBuilder().addComponents(
+          new ChannelSelectMenuBuilder()
+            .setCustomId(`admin:log:ch:${a.key}`)
+            .setPlaceholder(`Select log channel for ${a.label}`)
+            .addChannelTypes(ChannelType.GuildText)
+        ),
+        new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId(`admin:log:clear:${a.key}`).setLabel(`Clear ${a.label}`).setStyle(ButtonStyle.Danger)
+        )
+      );
+    }
+  }
+  const payload = { content: null, embeds: [logSetupEmbed(settings)], components: rows };
   if (interaction.deferred) return interaction.editReply(payload);
   return useUpdate ? interaction.update(payload) : interaction.reply({ ...payload, ephemeral: true });
 }
@@ -318,7 +404,7 @@ async function handleButton(interaction) {
       }
       await new Promise((r) => setTimeout(r, 750)); // stay well under DM rate limits
     }
-    await audit('DM_BROADCAST', interaction.user.id, `"${draft.title}" -> ${sent} sent, ${failed} failed`);
+    await adminAudit(interaction, 'DM_BROADCAST', `"${draft.title}" -> ${sent} sent, ${failed} failed`);
     await statusMsg
       .edit({
         content:
@@ -330,6 +416,16 @@ async function handleButton(interaction) {
   }
 
   if (id === 'admin:logs') {
+    await interaction.deferUpdate();
+    return showLogSetup(interaction, true);
+  }
+
+  if (id === 'admin:logs:done') {
+    if (!interaction.deferred && !interaction.replied) await interaction.deferUpdate();
+    return interaction.editReply({ content: 'Log setup closed.', embeds: [], components: [] });
+  }
+
+  if (id === 'admin:logs:activity') {
     await interaction.deferReply({ ephemeral: true });
     const logs = await prisma.auditLog.findMany({ orderBy: { createdAt: 'desc' }, take: 15 });
     const lines = logs.map((l) => {
@@ -339,6 +435,20 @@ async function handleButton(interaction) {
     return interaction.editReply({
       embeds: [new EmbedBuilder().setColor(0x95a5a6).setTitle('🧾 Recent Activity').setDescription(lines.join('\n\n') || 'No logs yet.')],
     });
+  }
+
+  if (id.startsWith('admin:log:clear:')) {
+    const key = id.split(':')[3];
+    const a = LOG_ACTIONS.find((x) => x.key === key);
+    if (!a) return interaction.reply({ embeds: [errorEmbed('Unknown log action.')], ephemeral: true });
+    await interaction.deferUpdate();
+    await prisma.guildSettings.upsert({
+      where: { guildId: interaction.guildId },
+      update: { [a.field]: null },
+      create: { guildId: interaction.guildId, [a.field]: null },
+    });
+    await adminAudit(interaction, 'LOG_CHANNEL_CLEAR', `${a.label} log channel cleared`);
+    return showLogSetup(interaction, true);
   }
 
   if (id === 'admin:settings') {
@@ -389,7 +499,7 @@ async function handleButton(interaction) {
     const eventId = id.split(':')[4];
     await prisma.tournamentRegistration.deleteMany({ where: { tournamentId: eventId } });
     await prisma.tournament.delete({ where: { id: eventId } }).catch(() => {});
-    await audit('EVENT_DELETE', interaction.user.id, eventId);
+    await adminAudit(interaction, 'EVENT_DELETE', eventId);
     return interaction.editReply({ content: '✅ Event deleted.', embeds: [], components: [] });
   }
   if (id.startsWith('admin:event:delete:no:')) {
@@ -431,7 +541,7 @@ async function handleButton(interaction) {
 
     if (!next) return interaction.followUp({ embeds: [errorEmbed('Unknown action.')], ephemeral: true });
     await prisma.tournament.update({ where: { id: event.id }, data: { status: next } });
-    await audit('EVENT_STATUS', interaction.user.id, `${event.name} -> ${next}`);
+    await adminAudit(interaction, 'EVENT_STATUS', `${event.name} -> ${next}`);
     if (action === 'open') {
       await showEventManager(interaction, event.id, true);
       return interaction.followUp({
@@ -455,14 +565,14 @@ async function handleButton(interaction) {
     if (!reg) return interaction.editReply({ content: 'Registration not found.', embeds: [], components: [] });
     const next = action === 'approve' ? 'APPROVED' : action === 'disqualify' ? 'DISQUALIFIED' : 'REMOVED';
     await prisma.tournamentRegistration.update({ where: { id: reg.id }, data: { status: next } });
-    await audit('REG_STATUS', interaction.user.id, `${reg.team.tag} in ${reg.tournament.name} -> ${next}`);
+    await adminAudit(interaction, 'REG_STATUS', `${reg.team.tag} in ${reg.tournament.name} -> ${next}`);
     return showRegistrations(interaction, reg.tournamentId, true);
   }
   if (id.startsWith('admin:reg:approveall:')) {
     await interaction.deferUpdate();
     const eventId = id.split(':')[3];
     const res = await prisma.tournamentRegistration.updateMany({ where: { tournamentId: eventId, status: 'PENDING' }, data: { status: 'APPROVED' } });
-    await audit('REG_APPROVE_ALL', interaction.user.id, `${eventId}: ${res.count} approved`);
+    await adminAudit(interaction, 'REG_APPROVE_ALL', `${eventId}: ${res.count} approved`);
     return showRegistrations(interaction, eventId, true);
   }
 
@@ -476,6 +586,7 @@ async function handleButton(interaction) {
       name: { title: 'Edit Event Name', label: 'Event name', style: TextInputStyle.Short, max: 80, ph: 'Evening Scrims #12' },
       slots: { title: 'Edit Total Slots', label: 'Total slots (2-500)', style: TextInputStyle.Short, max: 4, ph: '20' },
       tags: { title: 'Edit Tags Required', label: 'Tags required (1-8)', style: TextInputStyle.Short, max: 2, ph: '4' },
+      tpg: { title: 'Edit Teams Per Group', label: 'Teams per group 1-100 (empty = use settings)', style: TextInputStyle.Short, max: 3, ph: '20' },
       starttime: { title: 'Edit Registration Start', label: 'Start — YYYY-MM-DD HH:MM IST (empty = clear)', style: TextInputStyle.Short, max: 16, ph: '2026-10-01 18:00' },
       successmsg: { title: 'Edit Success Message', label: 'Message (empty = clear)', style: TextInputStyle.Paragraph, max: 500, ph: 'Welcome! Check the rules channel before match day.' },
     }[field];
@@ -503,7 +614,7 @@ async function handleButton(interaction) {
     const event = await prisma.tournament.findUnique({ where: { id: eventId } });
     if (!event) return interaction.editReply({ content: 'Event not found.', embeds: [], components: [] });
     await prisma.tournament.update({ where: { id: eventId }, data: { status: 'OPEN', regStartsAt: new Date() } });
-    await audit('REG_START', interaction.user.id, `${event.name} registration started instantly`);
+    await adminAudit(interaction, 'REG_START', `${event.name} registration started instantly`);
     await showRegManager(interaction, eventId, true);
     // Instant start: post the announcement right away when a registration channel is already chosen.
     if (event.regChannelId) {
@@ -527,7 +638,70 @@ async function handleButton(interaction) {
     const event = await prisma.tournament.findUnique({ where: { id: eventId } });
     if (!event) return interaction.editReply({ content: 'Event not found.', embeds: [], components: [] });
     await prisma.tournament.update({ where: { id: eventId }, data: { status: 'LOCKED' } });
-    await audit('REG_CLOSE', interaction.user.id, `${event.name} registration closed`);
+    await adminAudit(interaction, 'REG_CLOSE', `${event.name} registration closed`);
+    return showRegManager(interaction, eventId, true);
+  }
+
+  // ----- IDP group creation (confirmation -> create in a fresh "<name> — Round 1" category) -----
+  if (id.startsWith('admin:idp:ask:')) {
+    const eventId = id.split(':')[3];
+    await interaction.deferUpdate();
+    const event = await prisma.tournament.findUnique({ where: { id: eventId } });
+    if (!event) return interaction.editReply({ content: 'Event not found.', embeds: [], components: [] });
+    const settings = await getSettings(interaction.guildId);
+    const perGroup = event.teamsPerGroup || settings.groupSize || 20;
+    const nGroups = Math.max(Math.ceil(event.teamLimit / perGroup), 1);
+    const have = event.idpCategoryId ? await prisma.idpGroup.count({ where: { tournamentId: event.id } }) : 0;
+    if (have >= nGroups) {
+      return interaction.editReply({ content: 'IDP groups were already created for this event.', embeds: [], components: [] });
+    }
+    const remaining = nGroups - have;
+    const embed = new EmbedBuilder()
+      .setColor(0x5865f2)
+      .setTitle(`🗂️ ${have ? 'Resume' : 'Create'} IDP Groups — ${event.name}`)
+      .setDescription(
+        (have
+          ? `**${remaining}** of **${nGroups}** group channels are still missing — this will create the remaining ones.\n\n`
+          : `This will create a **new category** named **${event.name} — Round 1** with **${nGroups}** group channels ` +
+            `(\`${perGroup}\` teams per group, ${event.teamLimit} total slots).\n\n`) +
+          'Each channel starts **locked** and gets a schedule panel:\n' +
+          '✏️ Edit · 📋 Send Slot List · ⚠️ Punish Teams · ✅ Qualify Teams · 🔔 Send Reminders · 🔓 Unlock Group · ❌ Cancel Slot · 🔄 Transfer IDP Role\n\n' +
+          'Create them now?'
+      );
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`admin:idp:yes:${eventId}`)
+        .setLabel(have ? `Resume (${remaining} left)` : `Create ${nGroups} Groups`)
+        .setStyle(ButtonStyle.Success)
+        .setEmoji('✅'),
+      new ButtonBuilder().setCustomId(`admin:idp:no:${eventId}`).setLabel('Cancel').setStyle(ButtonStyle.Secondary)
+    );
+    return interaction.editReply({ content: null, embeds: [embed], components: [row] });
+  }
+
+  if (id.startsWith('admin:idp:no:')) {
+    return showRegManager(interaction, id.split(':')[3], true);
+  }
+
+  if (id.startsWith('admin:idp:yes:')) {
+    const eventId = id.split(':')[3];
+    await interaction.deferUpdate();
+    await interaction.editReply({ content: '🗂️ Creating IDP groups… this can take a bit for large tournaments.', embeds: [], components: [] });
+    try {
+      const summary = await createIdpGroups(interaction.client, interaction.guild, eventId, interaction.guildId);
+      await adminAudit(interaction, 'IDP_CREATE', `${summary.eventName}: ${summary.groups} groups in "${summary.categoryName}"`);
+      await interaction.editReply({
+        content:
+          `✅ Created **${summary.groups}** IDP groups in category **${summary.categoryName}**. Panels posted in every group channel.` +
+          (summary.failures.length ? `\n⚠️ ${summary.failures.length} channel(s) failed — press Create IDP Groups again to retry.` : ''),
+        embeds: [],
+        components: [],
+      });
+    } catch (e) {
+      console.error('[admin] idp create failed:', e);
+      await interaction.editReply({ content: `❌ Could not create IDP groups: ${e.message}`, embeds: [], components: [] });
+      return;
+    }
     return showRegManager(interaction, eventId, true);
   }
 
@@ -544,7 +718,7 @@ async function handleButton(interaction) {
       const role = await interaction.guild.roles.fetch(team.roleId).catch(() => null);
       if (role) await role.delete('Team disbanded by admin').catch(() => {});
     }
-    await audit('TEAM_DISBAND', interaction.user.id, `${team.tag} disbanded by admin`);
+    await adminAudit(interaction, 'TEAM_DISBAND', `${team.tag} disbanded by admin`);
     return interaction.editReply({ content: `✅ **${team.tag}** disbanded.`, embeds: [], components: [] });
   }
   if (id.startsWith('admin:team:')) {
@@ -573,7 +747,7 @@ async function handleButton(interaction) {
     if (action === 'suspend' || action === 'activate') {
       const next = action === 'suspend' ? 'SUSPENDED' : 'ACTIVE';
       await prisma.team.update({ where: { id: team.id }, data: { status: next } });
-      await audit('TEAM_STATUS', interaction.user.id, `${team.tag} -> ${next}`);
+      await adminAudit(interaction, 'TEAM_STATUS', `${team.tag} -> ${next}`);
       return interaction.editReply({ embeds: [successEmbed(`**${team.tag}** is now \`${next}\`.`)], components: [] });
     }
     if (action === 'disband') {
@@ -596,7 +770,7 @@ async function handleButton(interaction) {
       const member = await interaction.guild.members.fetch(membership.player.discordId).catch(() => null);
       if (member) await member.roles.remove(membership.team.roleId).catch(() => {});
     }
-    await audit('PLAYER_REMOVE', interaction.user.id, `${membership.player.ign} removed from ${membership.team.tag}`);
+    await adminAudit(interaction, 'PLAYER_REMOVE', `${membership.player.ign} removed from ${membership.team.tag}`);
     return interaction.editReply({ content: `✅ **${membership.player.ign}** removed from **${membership.team.tag}**.`, embeds: [], components: [] });
   }
 
@@ -609,7 +783,7 @@ async function handleButton(interaction) {
     await channel.permissionOverwrites.edit(interaction.guild.roles.everyone, {
       SendMessages: action === 'lock' ? false : null,
     });
-    await audit('CHANNEL_LOCK', interaction.user.id, `#${channel.name} ${action}ed`);
+    await adminAudit(interaction, 'CHANNEL_LOCK', `#${channel.name} ${action}ed`);
     return interaction.editReply({
       content: action === 'lock' ? `🔒 **#${channel.name}** locked.` : `🔓 **#${channel.name}** unlocked.`,
       embeds: [],
@@ -700,7 +874,7 @@ async function handleSelect(interaction) {
       console.error('[admin] announce post failed:', e.message);
       return interaction.editReply({ content: `❌ Could not post the announcement: ${e.message}`, embeds: [], components: [] });
     }
-    await audit('EVENT_ANNOUNCE', interaction.user.id, `${eventId} announcement posted in ${channelId}`);
+    await adminAudit(interaction, 'EVENT_ANNOUNCE', `${eventId} announcement posted in ${channelId}`);
     return interaction.editReply({ content: `✅ Registration post published in <#${channelId}>.`, embeds: [], components: [] });
   }
 
@@ -716,8 +890,28 @@ async function handleSelect(interaction) {
     await prisma.tournament.update({ where: { id: eventId }, data });
     const label =
       kind === 'regch' ? `registration channel -> ${value}` : kind === 'logch' ? `log channel -> ${value}` : `success role -> ${value}`;
-    await audit('REG_FIELD_EDIT', interaction.user.id, `${event.name}: ${label}`);
+    await adminAudit(interaction, 'REG_FIELD_EDIT', `${event.name}: ${label}`);
     return showRegManager(interaction, eventId, true);
+  }
+
+  if (id === 'admin:log:pick') {
+    await interaction.deferUpdate();
+    return showLogSetup(interaction, true, interaction.values[0]);
+  }
+
+  if (id.startsWith('admin:log:ch:')) {
+    const key = id.split(':')[3];
+    const a = LOG_ACTIONS.find((x) => x.key === key);
+    const channelId = interaction.values[0];
+    await interaction.deferUpdate();
+    if (!a) return interaction.editReply({ content: 'Unknown log action.', embeds: [], components: [] });
+    await prisma.guildSettings.upsert({
+      where: { guildId: interaction.guildId },
+      update: { [a.field]: channelId },
+      create: { guildId: interaction.guildId, [a.field]: channelId },
+    });
+    await adminAudit(interaction, 'LOG_CHANNEL_SET', `${a.label} logs -> <#${channelId}>`);
+    return showLogSetup(interaction, true);
   }
 
   if (id === 'admin:create:type') {
@@ -732,7 +926,8 @@ async function handleSelect(interaction) {
       mk('e_name', 'Name', 'Evening Scrims #12', TextInputStyle.Short, true, 80),
       mk('e_date', 'Date (optional) — YYYY-MM-DD HH:MM IST', '2026-10-01 19:00', TextInputStyle.Short, false, 16),
       mk('e_limit', 'Team limit (slots)', '20', TextInputStyle.Short, true, 4),
-      mk('e_tags', 'Tags required (1-8)', 'Teammates the leader must tag', TextInputStyle.Short, false, 2)
+      mk('e_tags', 'Tags required (1-8)', 'Teammates the leader must tag', TextInputStyle.Short, false, 2),
+      mk('e_tpg', 'Teams per group (IDP groups)', 'e.g. 20 — empty = use settings', TextInputStyle.Short, false, 3)
     );
     // showModal must NOT be preceded by defer — Discord forbids defer-then-modal.
     return interaction.showModal(modal);
@@ -916,11 +1111,23 @@ async function handleModal(interaction) {
     } else if (field === 'successmsg') {
       data = { successMessage: raw || null };
       note = raw ? 'success message updated' : 'success message cleared';
+    } else if (field === 'tpg') {
+      if (!raw) {
+        data = { teamsPerGroup: null };
+        note = 'teams per group cleared (uses Registration Settings)';
+      } else {
+        const n = parseInt(raw, 10);
+        if (!Number.isInteger(n) || n < 1 || n > 100) {
+          return interaction.editReply({ embeds: [errorEmbed('Teams per group must be a number between 1 and 100.')] });
+        }
+        data = { teamsPerGroup: n };
+        note = `teams per group -> ${n}`;
+      }
     } else {
       return interaction.editReply({ embeds: [errorEmbed('Unknown field.')] });
     }
     await prisma.tournament.update({ where: { id: eventId }, data });
-    await audit('REG_FIELD_EDIT', interaction.user.id, `${event.name}: ${note}`);
+    await adminAudit(interaction, 'REG_FIELD_EDIT', `${event.name}: ${note}`);
     return showRegManager(interaction, eventId, true);
   }
 
@@ -945,8 +1152,16 @@ async function handleModal(interaction) {
     if (!Number.isInteger(tagsRequired) || tagsRequired < 1 || tagsRequired > 8) {
       return interaction.editReply({ embeds: [errorEmbed('Tags required must be a number between 1 and 8.')] });
     }
+    const tpgRaw = interaction.fields.getTextInputValue('e_tpg').trim();
+    let teamsPerGroup = null;
+    if (tpgRaw) {
+      teamsPerGroup = parseInt(tpgRaw, 10);
+      if (!Number.isInteger(teamsPerGroup) || teamsPerGroup < 1 || teamsPerGroup > 100) {
+        return interaction.editReply({ embeds: [errorEmbed('Teams per group must be a number between 1 and 100, or left empty.')] });
+      }
+    }
 
-    const token = stashCreation({ type, name, date: date ? date.toISOString() : null, teamLimit, tagsRequired, createdBy: interaction.user.id });
+    const token = stashCreation({ type, name, date: date ? date.toISOString() : null, teamLimit, tagsRequired, teamsPerGroup, createdBy: interaction.user.id });
     // NOTE: a modal submit cannot open another modal (Discord API) — the admin taps Continue, then step 2 opens.
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(`admin:create:step2:${token}`).setLabel('Continue to Step 2').setStyle(ButtonStyle.Primary).setEmoji('➡️')
@@ -987,6 +1202,7 @@ async function handleModal(interaction) {
         region: null,
         teamSize: draft.tagsRequired,
         tagsRequired: draft.tagsRequired,
+        teamsPerGroup: draft.teamsPerGroup ?? null,
         inviteUrl: null,
         regStartsAt,
         successMessage,
@@ -994,7 +1210,7 @@ async function handleModal(interaction) {
         createdBy: draft.createdBy,
       },
     });
-    await audit('EVENT_CREATE', interaction.user.id, `${draft.name} (${draft.type}, ${draft.tagsRequired} tags, ${draft.teamLimit} slots)`);
+    await adminAudit(interaction, 'EVENT_CREATE', `${draft.name} (${draft.type}, ${draft.tagsRequired} tags, ${draft.teamLimit} slots)`);
     // Land directly in the registration manager so channels, role, message and
     // start time can be finished (or changed) right here during creation.
     return showRegManager(interaction, event.id, false);
@@ -1059,7 +1275,7 @@ async function handleModal(interaction) {
       const role = await interaction.guild.roles.fetch(team.roleId).catch(() => null);
       if (role) await role.setName(`[${tag}] ${name}`.slice(0, 100)).catch(() => {});
     }
-    await audit('TEAM_EDIT', interaction.user.id, `admin edited ${team.tag} -> ${tag}`);
+    await adminAudit(interaction, 'TEAM_EDIT', `admin edited ${team.tag} -> ${tag}`);
     return interaction.editReply({ embeds: [successEmbed(`Team updated: **${name} [${tag}]**.`)] });
   }
 
@@ -1071,7 +1287,7 @@ async function handleModal(interaction) {
     const title = interaction.fields.getTextInputValue('a_title').trim();
     const message = interaction.fields.getTextInputValue('a_message').trim();
     await channel.send({ embeds: [new EmbedBuilder().setColor(0xf1c40f).setTitle(`📢 ${title}`).setDescription(message).setFooter({ text: `Announced by ${interaction.user.username}` })] });
-    await audit('ANNOUNCE', interaction.user.id, `#${channel.name}: ${title}`);
+    await adminAudit(interaction, 'ANNOUNCE', `#${channel.name}: ${title}`);
     return interaction.editReply({ embeds: [successEmbed(`Announcement sent to **#${channel.name}**.`)] });
   }
 
@@ -1111,7 +1327,7 @@ async function handleModal(interaction) {
       update: { teamSize, maxSubs, teamIdPrefix: prefix || 'BR', maps, adminRoleIds: adminRoles },
       create: { guildId: interaction.guildId, teamSize, maxSubs, teamIdPrefix: prefix || 'BR', maps, adminRoleIds: adminRoles },
     });
-    await audit('SETTINGS_UPDATE', interaction.user.id, `teamSize=${teamSize} maxSubs=${maxSubs} maps=${maps.join('/')}`);
+    await adminAudit(interaction, 'SETTINGS_UPDATE', `teamSize=${teamSize} maxSubs=${maxSubs} maps=${maps.join('/')}`);
     return interaction.editReply({ embeds: [successEmbed('Settings saved.')] });
   }
 
@@ -1126,7 +1342,7 @@ async function handleModal(interaction) {
       update: { groupSize },
       create: { guildId: interaction.guildId, groupSize },
     });
-    await audit('SETTINGS_UPDATE', interaction.user.id, `groupSize=${groupSize}`);
+    await adminAudit(interaction, 'SETTINGS_UPDATE', `groupSize=${groupSize}`);
     return interaction.editReply({ embeds: [successEmbed(`Registration settings saved. New registrations will be grouped ${groupSize} teams per group.`)] });
   }
 }

@@ -175,6 +175,42 @@ async function audit(action, userId, details) {
   }
 }
 
+/** Post an embed to a log channel. Never throws. Returns true when sent. */
+async function sendLogEmbed(client, guildId, channelId, embed) {
+  try {
+    if (!channelId) return false;
+    const guild = await client.guilds.fetch(guildId).catch(() => null);
+    if (!guild) return false;
+    const ch = await guild.channels.fetch(channelId).catch(() => null);
+    if (!ch || !ch.isTextBased()) return false;
+    await ch.send({ embeds: [embed] });
+    return true;
+  } catch (e) {
+    console.error('[log] send failed:', e.message);
+    return false;
+  }
+}
+
+/** Post admin activity to the configured Admin Activity log channel. Never throws. */
+async function postAdminLog(client, guildId, action, userId, details) {
+  try {
+    const s = await prisma.guildSettings.findUnique({ where: { guildId } });
+    if (!s || !s.logAdminActivity) return;
+    await sendLogEmbed(
+      client,
+      guildId,
+      s.logAdminActivity,
+      new EmbedBuilder()
+        .setColor(0xf1c40f)
+        .setTitle('🛠️ Admin Activity')
+        .setDescription(`**${action}** — <@${userId}>\n${details ? String(details).slice(0, 1500) : ''}`)
+        .setTimestamp()
+    );
+  } catch (e) {
+    console.error('[adminlog] failed:', e.message);
+  }
+}
+
 module.exports = {
   getSettings,
   isAdmin,
@@ -195,4 +231,6 @@ module.exports = {
   successEmbed,
   rosterLines,
   audit,
+  sendLogEmbed,
+  postAdminLog,
 };
