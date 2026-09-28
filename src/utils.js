@@ -179,7 +179,9 @@ async function audit(action, userId, details) {
 async function sendLogEmbed(client, guildId, channelId, embed) {
   try {
     if (!channelId) return false;
-    const guild = await client.guilds.fetch(guildId).catch(() => null);
+    // Use the cache — the guild is always cached for a running bot, and this
+    // avoids a network round-trip that could stall the calling handler.
+    const guild = client.guilds.cache.get(guildId) || null;
     if (!guild) return false;
     const ch = await guild.channels.fetch(channelId).catch(() => null);
     if (!ch || !ch.isTextBased()) return false;

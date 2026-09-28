@@ -8,7 +8,7 @@ const { prisma } = require('./db');
 const { handleInteraction } = require('./router');
 
 // Build tag — bump when shipping a fix so the console shows which code is live.
-const BUILD = '2026-09-28.idpflow-1';
+const BUILD = '2026-09-28.idpflow-2';
 console.log(`🤖 scrims-bot ${BUILD} starting...`);
 
 if (!config.token) {

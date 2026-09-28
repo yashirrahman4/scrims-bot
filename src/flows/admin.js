@@ -163,7 +163,6 @@ function regManagerRows(event, idpState) {
     eb('name', 'Edit Name', '✏️'),
     eb('slots', 'Edit Slots', '🎰'),
     eb('tags', 'Edit Tags', '🏷️'),
-    eb('tpg', 'Teams/Group', '👥'),
     eb('starttime', 'Edit Start Time', '🕓'),
     eb('successmsg', 'Edit Success Msg', '💬')
   );
@@ -171,6 +170,7 @@ function regManagerRows(event, idpState) {
     open
       ? new ButtonBuilder().setCustomId(`admin:reg:close:${event.id}`).setLabel('Close Registration').setStyle(ButtonStyle.Danger).setEmoji('🔒')
       : new ButtonBuilder().setCustomId(`admin:reg:start:${event.id}`).setLabel('Start Registration').setStyle(ButtonStyle.Success).setEmoji('▶️'),
+    eb('tpg', 'Teams/Group', '👥'),
     idpState === 'done'
       ? new ButtonBuilder().setCustomId('admin:idp:done').setLabel('IDP Groups Ready').setStyle(ButtonStyle.Secondary).setEmoji('🗂️').setDisabled(true)
       : new ButtonBuilder()
@@ -584,7 +584,7 @@ async function handleButton(interaction) {
     const field = id.split(':')[2];
     const cfg = {
       name: { title: 'Edit Event Name', label: 'Event name', style: TextInputStyle.Short, max: 80, ph: 'Evening Scrims #12' },
-      slots: { title: 'Edit Total Slots', label: 'Total slots (2-500)', style: TextInputStyle.Short, max: 4, ph: '20' },
+      slots: { title: 'Edit Total Slots', label: 'Total slots (2-2000)', style: TextInputStyle.Short, max: 4, ph: '20' },
       tags: { title: 'Edit Tags Required', label: 'Tags required (1-8)', style: TextInputStyle.Short, max: 2, ph: '4' },
       tpg: { title: 'Edit Teams Per Group', label: 'Teams per group 1-100 (empty = use settings)', style: TextInputStyle.Short, max: 3, ph: '20' },
       starttime: { title: 'Edit Registration Start', label: 'Start — YYYY-MM-DD HH:MM IST (empty = clear)', style: TextInputStyle.Short, max: 16, ph: '2026-10-01 18:00' },
@@ -925,7 +925,7 @@ async function handleSelect(interaction) {
     modal.addComponents(
       mk('e_name', 'Name', 'Evening Scrims #12', TextInputStyle.Short, true, 80),
       mk('e_date', 'Date (optional) — YYYY-MM-DD HH:MM IST', '2026-10-01 19:00', TextInputStyle.Short, false, 16),
-      mk('e_limit', 'Team limit (slots)', '20', TextInputStyle.Short, true, 4),
+      mk('e_limit', 'Team limit (slots, max 2000)', '20', TextInputStyle.Short, true, 4),
       mk('e_tags', 'Tags required (1-8)', 'Teammates the leader must tag', TextInputStyle.Short, false, 2),
       mk('e_tpg', 'Teams per group (IDP groups)', 'e.g. 20 — empty = use settings', TextInputStyle.Short, false, 3)
     );
@@ -1084,8 +1084,8 @@ async function handleModal(interaction) {
       note = `name -> "${data.name}"`;
     } else if (field === 'slots') {
       const n = parseInt(raw, 10);
-      if (!raw || !Number.isInteger(n) || n < 2 || n > 500) {
-        return interaction.editReply({ embeds: [errorEmbed('Slots must be a number between 2 and 500.')] });
+      if (!raw || !Number.isInteger(n) || n < 2 || n > 2000) {
+        return interaction.editReply({ embeds: [errorEmbed('Slots must be a number between 2 and 2000.')] });
       }
       const taken = await regCount(eventId);
       if (n < taken) return interaction.editReply({ embeds: [errorEmbed(`Cannot set slots below the current registration count (${taken}).`)] });
@@ -1140,8 +1140,8 @@ async function handleModal(interaction) {
     const tagsRaw = interaction.fields.getTextInputValue('e_tags').trim();
 
     const teamLimit = parseInt(limitRaw, 10);
-    if (!Number.isInteger(teamLimit) || teamLimit < 2 || teamLimit > 500) {
-      return interaction.editReply({ embeds: [errorEmbed('Team limit must be a number between 2 and 500.')] });
+    if (!Number.isInteger(teamLimit) || teamLimit < 2 || teamLimit > 2000) {
+      return interaction.editReply({ embeds: [errorEmbed('Team limit must be a number between 2 and 2000.')] });
     }
     let date = null;
     if (dateRaw) {
@@ -1213,7 +1213,18 @@ async function handleModal(interaction) {
     await adminAudit(interaction, 'EVENT_CREATE', `${draft.name} (${draft.type}, ${draft.tagsRequired} tags, ${draft.teamLimit} slots)`);
     // Land directly in the registration manager so channels, role, message and
     // start time can be finished (or changed) right here during creation.
-    return showRegManager(interaction, event.id, false);
+    // Never leave the admin hanging on "thinking": if the panel build fails,
+    // fall back to a plain confirmation.
+    try {
+      return await showRegManager(interaction, event.id, false);
+    } catch (e) {
+      console.error('[admin] create: regmanager failed:', e.message);
+      return interaction.editReply({
+        content: null,
+        embeds: [successEmbed(`**${draft.name}** created with ${draft.teamLimit} slots. Open the event panel → Manage Registration to finish setup.`)],
+        components: [],
+      });
+    }
   }
 
   if (id === 'admin:teams:search') {
@@ -1347,4 +1358,4 @@ async function handleModal(interaction) {
   }
 }
 
-module.exports = { handle };
+module.exports = { handle, stashCreation };

@@ -101,7 +101,7 @@ function regStartsInMessage(event) {
   return `Registration for **${event.name}** opens <t:${ts}:F>.`;
 }
 
-function registrationSuccessEmbed(team, event, reg) {
+function registrationSuccessEmbed(team, event, reg, dmOk = true) {
   const embed = new EmbedBuilder()
     .setColor(0x57f287)
     .setTitle('🎉 Registration Successful')
@@ -111,9 +111,25 @@ function registrationSuccessEmbed(team, event, reg) {
         `• Group Assigned: \`Group ${reg.groupNo}\`\n` +
         `• Slot Assigned: \`Slot ${reg.slotNo}\`` +
         (reg.taggedDiscordIds?.length ? `\n• Tagged: ${reg.taggedDiscordIds.map((id) => `<@${id}>`).join(' ')}` : '') +
-        (event.successMessage ? `\n\n💬 ${event.successMessage}` : '')
+        (event.successMessage && !dmOk ? `\n\n💬 ${event.successMessage}\n_(Couldn't DM you — your DMs may be closed.)_` : '')
     );
   return embed;
+}
+
+/** DM the event's custom success message to the registering user. Returns true when sent. Never throws. */
+async function dmSuccessMessage(interaction, event) {
+  if (!event.successMessage) return true;
+  try {
+    await interaction.user.send({
+      embeds: [
+        new EmbedBuilder().setColor(0x57f287).setTitle(`🎉 ${event.name}`).setDescription(event.successMessage),
+      ],
+    });
+    return true;
+  } catch (e) {
+    console.error('[events] success DM failed:', e.message);
+    return false;
+  }
 }
 
 /** Success-role grant + log-channel post after a registration. Never throws. */
@@ -234,9 +250,12 @@ async function confirmRegistrationWithTags(interaction, eventId) {
     return interaction.editReply({ content: null, embeds: [errorEmbed(e.message)], components: [] });
   }
   await audit('EVENT_REGISTER', interaction.user.id, `${team.tag} registered for ${event.name} (${event.type}) — Group ${reg.groupNo}, Slot ${reg.slotNo}, tagged ${taggedIds.length}`);
+  // The custom success message goes to the user's DMs; if DMs are closed it
+  // falls back to the ephemeral reply so it is never lost.
+  const dmOk = await dmSuccessMessage(interaction, event);
   await interaction.editReply({
     content: null,
-    embeds: [registrationSuccessEmbed(team, event, reg)],
+    embeds: [registrationSuccessEmbed(team, event, reg, dmOk)],
     components: [],
   });
   await applyRegistrationExtras(interaction, event, team, reg);
