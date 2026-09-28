@@ -259,6 +259,8 @@ async function finalizeRegistration(interaction, event, team, dbUser, taggedIds)
     embeds: [registrationSuccessEmbed(team, event, reg, dmOk)],
     components: [],
   });
+  // Keep the public panel's slot counter in sync.
+  await refreshAnnouncementPanel(interaction.client, interaction.guildId, event.id);
   await applyRegistrationExtras(interaction, event, team, reg);
 }
 
@@ -299,9 +301,8 @@ function registrationPostPayload(event, taken) {
         (event.description || `Tap **Register** below to lock in your slot for **${event.name}**.`)
     )
     .addFields(
-      { name: '🗓️ Date', value: formatIST(event.date), inline: true },
+      { name: '🗓️ Date', value: formatIST(event.date || event.regStartsAt), inline: true },
       { name: '🎰 Slots', value: `${taken}/${event.teamLimit}`, inline: true },
-      { name: '🪑 Slots Left', value: left > 0 ? `**${left}** remaining` : '~~Full~~', inline: true },
       { name: '🏷️ Tags Required', value: tags === 0 ? 'None — register directly' : `Tag **${tags}** teammates`, inline: true },
       { name: '📌 Status', value: event.status === 'OPEN' ? '🟢 Registration Open' : '🔴 Not Open Yet', inline: true },
       { name: '📝 How to Register', value: 'Press **Register** → tag your teammates (if required) → done. You will get your slot number instantly.' }
@@ -317,6 +318,24 @@ function registrationPostPayload(event, taken) {
       .setDisabled(left <= 0)
   );
   return { embeds: [embed], components: [row] };
+}
+
+/** Re-render the public registration announcement in place (slots count, button state). Never throws. */
+async function refreshAnnouncementPanel(client, guildId, eventId) {
+  try {
+    const event = await prisma.tournament.findUnique({ where: { id: eventId } });
+    if (!event || !event.announceMsgId || !event.announceChannelId) return;
+    const guild = await client.guilds.fetch(guildId).catch(() => null);
+    if (!guild) return;
+    const channel = await guild.channels.fetch(event.announceChannelId).catch(() => null);
+    if (!channel || !channel.isTextBased()) return;
+    const msg = await channel.messages.fetch(event.announceMsgId).catch(() => null);
+    if (!msg) return;
+    const taken = await slotsTaken(event.id);
+    await msg.edit(registrationPostPayload(event, taken));
+  } catch (e) {
+    console.error('[events] announcement refresh failed:', e.message);
+  }
 }
 
 /** Post (or refresh) the registration announcement in a channel; records the message id on the event. */
@@ -555,4 +574,4 @@ async function handleSelect(interaction) {
   }
 }
 
-module.exports = { handle, postRegistrationAnnouncement, registrationPostPayload, slotsTaken, createRegistrationWithSlot, checkEligibility };
+module.exports = { handle, postRegistrationAnnouncement, refreshAnnouncementPanel, registrationPostPayload, slotsTaken, createRegistrationWithSlot, checkEligibility };

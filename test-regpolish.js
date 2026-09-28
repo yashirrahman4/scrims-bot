@@ -263,6 +263,23 @@ function baseEvent(over = {}) {
   ok('reg manager embed: missing gate fields flagged', fmap['Registration Channel'].includes('required') && fmap['Log Channel'].includes('required') && fmap['Success Role'].includes('required'));
   ok('reg manager embed: ping role shown', fmap['Ping Role'].includes('p1'));
 
+  // ---------- 10b. Slots Left removed, date fallback, live slot refresh ----------
+  const ppNoLeft = eventFlows.registrationPostPayload(baseEvent({ status: 'OPEN' }), 5);
+  ok('post payload: no Slots Left field', !ppNoLeft.embeds[0].data.fields.some((f) => (f.name || '').includes('Slots Left')));
+  ok('post payload: Slots shows taken/total', ppNoLeft.embeds[0].data.fields.find((f) => (f.name || '').includes('🎰')).value === '5/40');
+  const ppDateFb = eventFlows.registrationPostPayload(baseEvent({ status: 'OPEN', date: null, regStartsAt: new Date('2026-09-29T10:00:00Z') }), 0);
+  ok('post payload: date falls back to registration start', ppDateFb.embeds[0].data.fields.find((f) => (f.name || '').includes('Date')).value.includes('2026-09-29'));
+  state.event = baseEvent({ status: 'OPEN', announceMsgId: 'amsg1', announceChannelId: 'achan1' });
+  let editedPayload = null;
+  const fakeMsg = { edit: async (p) => { editedPayload = p; } };
+  const fakeChannel = { isTextBased: () => true, messages: { fetch: async () => fakeMsg } };
+  const fakeClient = { guilds: { fetch: async () => ({ channels: { fetch: async () => fakeChannel } }) } };
+  await eventFlows.refreshAnnouncementPanel(fakeClient, 'g1', 'e1');
+  ok('refresh: panel message edited', !!editedPayload);
+  ok('refresh: edited payload is the registration post', editedPayload.embeds[0].data.title.includes('Big Tourney'));
+  await eventFlows.refreshAnnouncementPanel(fakeClient, 'g1', 'missing');
+  ok('refresh: missing event does not throw', true);
+
   // ---------- 11. not-open message on the post's Register button ----------
   state.event = baseEvent({ status: 'DRAFT', tagsRequired: 0 });
   const earlyIx = mockInteraction('button', 'event:registerpost:e1');

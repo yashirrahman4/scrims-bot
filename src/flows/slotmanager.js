@@ -19,6 +19,7 @@ const {
 } = require('discord.js');
 const { prisma } = require('../db');
 const { requireAdmin, errorEmbed, successEmbed, audit, postAdminLog, getSettings } = require('../utils');
+const { refreshAnnouncementPanel } = require('./events');
 
 const ACTIVE_REG = ['PENDING', 'APPROVED'];
 
@@ -213,6 +214,7 @@ async function handleButton(interaction) {
       embeds: [new EmbedBuilder().setColor(0xed4245).setDescription(`❌ **[${reg.team.tag}] ${reg.team.name}** cancelled their slot (was Slot ${reg.slotNo}, Group ${reg.groupNo}).`)],
     });
     await slotLog(interaction, reg.tournament, 'SLOT_CANCELLED', `**[${reg.team.tag}] ${reg.team.name}** cancelled Slot ${reg.slotNo} (Group ${reg.groupNo})`, 0xed4245);
+    await refreshAnnouncementPanel(interaction.client, interaction.guildId, reg.tournamentId);
     return interaction.editReply({ content: `✅ Your slot (Slot ${reg.slotNo}) has been cancelled.`, embeds: [], components: [] });
   }
 
@@ -313,6 +315,7 @@ async function handleButton(interaction) {
       embeds: [new EmbedBuilder().setColor(0xed4245).setDescription(`❌ Staff cancelled the slot of **[${reg.team.tag}] ${reg.team.name}** (was Slot ${reg.slotNo}, Group ${reg.groupNo}).`)],
     });
     await slotLog(interaction, reg.tournament, 'SLOT_CANCELLED', `Staff cancelled **[${reg.team.tag}] ${reg.team.name}** — Slot ${reg.slotNo}, Group ${reg.groupNo}`, 0xed4245);
+    await refreshAnnouncementPanel(interaction.client, interaction.guildId, reg.tournamentId);
     return interaction.editReply({ content: `✅ Cancelled the slot of **[${reg.team.tag}] ${reg.team.name}**.`, embeds: [], components: [] });
   }
 

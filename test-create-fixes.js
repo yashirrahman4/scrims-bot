@@ -142,7 +142,7 @@ const embedText = (p) => (p && p.embeds ? p.embeds.map((e) => `${e.data.title ||
   const createText = embedText(createIx._edit) + ' ' + (createIx._edit.content || '');
   ok('modal2: reg manager panel shown after creation', /Registration|Big Tourney/.test(createText));
   const rows = createIx._edit.components;
-  ok('modal2: panel has 6 rows', rows.length === 6);
+  ok('modal2: panel has 5 rows (Discord limit)', rows.length === 5);
   const btnCounts = rows.map((r) => r.components.filter((c) => c.data.type === 2).length);
   ok('modal2: no row has more than 5 buttons', btnCounts.every((c) => c <= 5));
   const labels = rows.flatMap((r) => r.components.map((c) => c.data.label).filter(Boolean));

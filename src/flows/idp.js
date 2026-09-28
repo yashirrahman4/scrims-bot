@@ -259,6 +259,20 @@ async function createIdpGroups(client, guild, eventId, guildId, namePattern) {
   }
   let created = 0;
   const failures = [];
+  // Self-heal: groups created earlier whose panel post failed get their panel now.
+  const paneless = await prisma.idpGroup.findMany({ where: { tournamentId: event.id, panelMsgId: null } });
+  for (const g of paneless) {
+    try {
+      const ch = await guild.channels.fetch(g.channelId).catch(() => null);
+      if (!ch || !ch.isTextBased()) continue;
+      const full = await getGroup(g.id);
+      const msg = await ch.send(idpPanelPayload(full));
+      await prisma.idpGroup.update({ where: { id: g.id }, data: { panelMsgId: msg.id } });
+      console.log(`[idp] reposted missing panel for group ${g.groupNo}`);
+    } catch (e) {
+      console.error(`[idp] repost panel for group ${g.groupNo} failed:`, e.message);
+    }
+  }
   for (let g = 1; g <= n; g++) {
     if (have.has(g)) continue; // already exists from a previous run
     const displayName = groupDisplayName(pattern, g - 1);

@@ -208,7 +208,7 @@ function regManagerRows(event, idpState) {
   const row5 = new ActionRowBuilder().addComponents(
     new RoleSelectMenuBuilder()
       .setCustomId(`admin:regmgr:roles:${event.id}`)
-      .setPlaceholder('Select Success Role (+ optional 2nd role = ping on start)')
+      .setPlaceholder('🔔 Ping Role: 1st pick = Success Role, optional 2nd pick = ping role')
       .setMinValues(1)
       .setMaxValues(2)
       .setDefaultRoles([event.successRoleId, event.pingRoleId].filter(Boolean))
