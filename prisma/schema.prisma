@@ -104,6 +104,8 @@ model Tournament {
   successMessage   String?
   teamsPerGroup    Int?
   idpCategoryId    String?
+  idpNamePattern   String?
+  slotManagerChannelId String?
   idpGroups        IdpGroup[]
   registrations TournamentRegistration[]
   createdAt        DateTime                 @default(now())
@@ -172,6 +174,7 @@ model IdpGroup {
   matchesDate DateTime?
   totalMatches Int       @default(1)
   idpRoleHolderId String?
+  roleId      String?
   matches     IdpMatch[]
   createdAt   DateTime   @default(now())
 

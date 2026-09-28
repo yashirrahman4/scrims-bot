@@ -144,6 +144,21 @@ async function applyRegistrationExtras(interaction, event, team, reg) {
       console.error('[events] success-role assign failed:', e.message);
     }
   }
+  // Hand the new team the Discord role of their IDP group (if groups exist).
+  try {
+    const grp = await prisma.idpGroup.findFirst({ where: { tournamentId: event.id, groupNo: reg.groupNo } });
+    if (grp?.roleId) {
+      const role = await guild.roles.fetch(grp.roleId).catch(() => null);
+      if (role) {
+        for (const did of [...new Set([interaction.user.id, ...(reg.taggedDiscordIds || [])])]) {
+          const m = await guild.members.fetch(did).catch(() => null);
+          if (m && !m.roles.cache.has(role.id)) await m.roles.add(role).catch(() => {});
+        }
+      }
+    }
+  } catch (e) {
+    console.error('[events] idp group role assign failed:', e.message);
+  }
   if (event.logChannelId) {
     try {
       const ch = await guild.channels.fetch(event.logChannelId).catch(() => null);

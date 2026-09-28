@@ -2,6 +2,7 @@ const teamFlows = require('./flows/team');
 const eventFlows = require('./flows/events');
 const adminFlows = require('./flows/admin');
 const idpFlows = require('./flows/idp');
+const slotFlows = require('./flows/slotmanager');
 const exportFlows = require('./flows/export');
 const panels = require('./panels');
 const { prisma } = require('./db');
@@ -67,6 +68,7 @@ async function handleInteraction(interaction) {
     if (id.startsWith('scrim:') || id.startsWith('tournament:') || id.startsWith('event:')) return eventFlows.handle(interaction);
     if (id.startsWith('admin:')) return adminFlows.handle(interaction);
     if (id.startsWith('idp:')) return idpFlows.handle(interaction);
+    if (id.startsWith('slot:')) return slotFlows.handle(interaction);
   } catch (err) {
     console.error('[router] error:', err);
     try {

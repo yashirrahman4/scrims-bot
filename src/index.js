@@ -8,7 +8,7 @@ const { prisma } = require('./db');
 const { handleInteraction } = require('./router');
 
 // Build tag — bump when shipping a fix so the console shows which code is live.
-const BUILD = '2026-09-28.idpflow-2';
+const BUILD = '2026-09-29.slotmanager-1';
 console.log(`🤖 scrims-bot ${BUILD} starting...`);
 
 if (!config.token) {
@@ -54,6 +54,9 @@ async function boot() {
       ['Tournament', 'tagsRequired', 'INTEGER NOT NULL DEFAULT 4'],
       ['Tournament', 'teamsPerGroup', 'INTEGER'],
       ['Tournament', 'idpCategoryId', 'TEXT'],
+      ['Tournament', 'idpNamePattern', 'TEXT'],
+      ['Tournament', 'slotManagerChannelId', 'TEXT'],
+      ['IdpGroup', 'roleId', 'TEXT'],
       ['TournamentRegistration', 'taggedDiscordIds', `TEXT[] NOT NULL DEFAULT '{}'`],
       ['TournamentRegistration', 'qualified', 'BOOLEAN NOT NULL DEFAULT false'],
       ['GuildSettings', 'logTeamVerify', 'TEXT'],

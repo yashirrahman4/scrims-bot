@@ -282,6 +282,28 @@ async function showLogSetup(interaction, useUpdate, actionKey) {
 
 // ---------- buttons ----------
 
+// Shared by the IDP confirm button (resume) and the naming-pattern modal (fresh).
+async function runIdpCreation(interaction, eventId, namePattern) {
+  await interaction.editReply({ content: '🗂️ Creating IDP groups, roles and panels… this can take a bit for large tournaments.', embeds: [], components: [] });
+  try {
+    const summary = await createIdpGroups(interaction.client, interaction.guild, eventId, interaction.guildId, namePattern);
+    await adminAudit(interaction, 'IDP_CREATE', `${summary.eventName}: ${summary.groups} groups in "${summary.categoryName}" (pattern "${summary.pattern}")`);
+    await interaction.editReply({
+      content:
+        `✅ Created **${summary.groups}** IDP groups in category **${summary.categoryName}**.\n` +
+        `Naming: **${summary.pattern}** → channels + roles created, roles given to each group's teams, panels posted.` +
+        (summary.failures.length ? `\n⚠️ ${summary.failures.length} group(s) failed — press Create IDP Groups again to retry.` : ''),
+      embeds: [],
+      components: [],
+    });
+  } catch (e) {
+    console.error('[admin] idp create failed:', e);
+    await interaction.editReply({ content: `❌ Could not create IDP groups: ${e.message}`, embeds: [], components: [] });
+    return;
+  }
+  return showRegManager(interaction, eventId, true);
+}
+
 async function handleButton(interaction) {
   const id = interaction.customId;
 
@@ -663,9 +685,12 @@ async function handleButton(interaction) {
         (have
           ? `**${remaining}** of **${nGroups}** group channels are still missing — this will create the remaining ones.\n\n`
           : `This will create a **new category** named **${event.name} — Round 1** with **${nGroups}** group channels ` +
-            `(\`${perGroup}\` teams per group, ${event.teamLimit} total slots).\n\n`) +
-          'Each channel starts **locked** and gets a schedule panel:\n' +
-          '✏️ Edit · 📋 Send Slot List · ⚠️ Punish Teams · ✅ Qualify Teams · 🔔 Send Reminders · 🔓 Unlock Group · ❌ Cancel Slot · 🔄 Transfer IDP Role\n\n' +
+            `(\`${perGroup}\` teams per group, ${event.teamLimit} total slots).\n\n` +
+            `You'll name the first group (e.g. **XYZ G1**) and the rest follow automatically: **XYZ G2, XYZ G3…**\n` +
+            `Enter **XYZ R1 G1** and you get **XYZ R1 G1, XYZ R1 G2…**\n\n`) +
+          'Each group gets a **channel**, a matching **role** (auto-given to its teams\' members) and a schedule panel:\n' +
+          '✏️ Edit · 📋 Send Slot List · ✅ Qualify Teams · 🔔 Send Reminders · 🔓 Unlock Group' +
+          (event.type === 'SCRIM' ? ' · ⚠️ Punish Teams' : '') + '\n\n' +
           'Create them now?'
       );
     const row = new ActionRowBuilder().addComponents(
@@ -685,24 +710,27 @@ async function handleButton(interaction) {
 
   if (id.startsWith('admin:idp:yes:')) {
     const eventId = id.split(':')[3];
-    await interaction.deferUpdate();
-    await interaction.editReply({ content: '🗂️ Creating IDP groups… this can take a bit for large tournaments.', embeds: [], components: [] });
-    try {
-      const summary = await createIdpGroups(interaction.client, interaction.guild, eventId, interaction.guildId);
-      await adminAudit(interaction, 'IDP_CREATE', `${summary.eventName}: ${summary.groups} groups in "${summary.categoryName}"`);
-      await interaction.editReply({
-        content:
-          `✅ Created **${summary.groups}** IDP groups in category **${summary.categoryName}**. Panels posted in every group channel.` +
-          (summary.failures.length ? `\n⚠️ ${summary.failures.length} channel(s) failed — press Create IDP Groups again to retry.` : ''),
-        embeds: [],
-        components: [],
-      });
-    } catch (e) {
-      console.error('[admin] idp create failed:', e);
-      await interaction.editReply({ content: `❌ Could not create IDP groups: ${e.message}`, embeds: [], components: [] });
-      return;
+    const event = await prisma.tournament.findUnique({ where: { id: eventId } });
+    if (!event) return interaction.reply({ content: 'Event not found.', ephemeral: true });
+    if (event.idpCategoryId) {
+      // Resume — the naming pattern was already chosen.
+      await interaction.deferUpdate();
+      return runIdpCreation(interaction, eventId, event.idpNamePattern);
     }
-    return showRegManager(interaction, eventId, true);
+    // Fresh — ask the admin to name the first group. showModal must be the first ack.
+    const modal = new ModalBuilder().setCustomId(`admin:idp:name:${eventId}`).setTitle('Name Your IDP Groups');
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('p_name')
+          .setLabel('First group name (rest follow automatically)')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(60)
+          .setPlaceholder('XYZ G1  →  XYZ G1, XYZ G2, XYZ G3…')
+      )
+    );
+    return interaction.showModal(modal);
   }
 
   // ----- team management -----
@@ -891,6 +919,16 @@ async function handleSelect(interaction) {
     const label =
       kind === 'regch' ? `registration channel -> ${value}` : kind === 'logch' ? `log channel -> ${value}` : `success role -> ${value}`;
     await adminAudit(interaction, 'REG_FIELD_EDIT', `${event.name}: ${label}`);
+    if (kind === 'regch') {
+      // Auto-create the #slot-manager channel in the same category.
+      try {
+        const { ensureSlotManager } = require('./slotmanager');
+        const fresh = await prisma.tournament.findUnique({ where: { id: eventId } });
+        await ensureSlotManager(interaction.client, interaction.guild, fresh);
+      } catch (e) {
+        console.error('[admin] slot-manager auto-create failed:', e.message);
+      }
+    }
     return showRegManager(interaction, eventId, true);
   }
 
@@ -1069,6 +1107,15 @@ async function handleSelect(interaction) {
 
 async function handleModal(interaction) {
   const id = interaction.customId;
+
+  if (id.startsWith('admin:idp:name:')) {
+    const eventId = id.split(':')[3];
+    await interaction.deferReply({ ephemeral: true });
+    const pattern = interaction.fields.getTextInputValue('p_name').trim().slice(0, 60);
+    if (!pattern) return interaction.editReply({ embeds: [errorEmbed('Please enter a name pattern.')] });
+    await prisma.tournament.update({ where: { id: eventId }, data: { idpNamePattern: pattern } });
+    return runIdpCreation(interaction, eventId, pattern);
+  }
 
   if (id.startsWith('admin:regedit:submit:')) {
     const [, , , field, eventId] = id.split(':');

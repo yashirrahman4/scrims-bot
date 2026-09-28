@@ -39,20 +39,28 @@ const payload = idpPanelPayload(fakeGroup);
 ok('payload has embeds', Array.isArray(payload.embeds) && payload.embeds.length === 1);
 const desc = payload.embeds[0].data.description;
 ok('title mentions G3-D1', payload.embeds[0].data.title.includes('G3-D1'));
-ok('shows total slots 16', desc.includes('**Total Slots:** 16'));
-ok('shows match 1 Erangel with times', desc.includes('**Match 1 - Erangel**') && desc.includes('12:45 PM') && desc.includes('12:55 PM'));
-ok('shows match 2 Miramar with TBD', desc.includes('**Match 2 - Miramar**') && desc.includes('TBD'));
+ok('shows total slots 16', desc.includes('Total Slots:** 16'));
+ok('shows match 1 Erangel with times', desc.includes('**Match 1**') && desc.includes('Erangel') && desc.includes('12:45 PM') && desc.includes('12:55 PM'));
+ok('shows match 2 Miramar with TBD', desc.includes('Miramar') && desc.includes('TBD'));
 ok('footer says locked', payload.embeds[0].data.footer.text.includes('locked'));
-ok('two button rows', payload.components.length === 2);
+ok('tournament panel: one row of five (no punish/cancel/transfer)', payload.components.length === 1 && payload.components[0].components.length === 5);
 const labels = payload.components.flatMap((r) => r.components.map((b) => b.data.label));
-for (const want of ['Edit', 'Send Slot List', 'Punish Teams', 'Qualify Teams', 'Send Reminders', 'Unlock Group', 'Cancel Slot', 'Transfer IDP Role']) {
+for (const want of ['Edit', 'Send Slot List', 'Qualify Teams', 'Send Reminders', 'Unlock Group']) {
   ok(`button "${want}" present`, labels.includes(want));
 }
+for (const gone of ['Punish Teams', 'Cancel Slot', 'Transfer IDP Role']) {
+  ok(`button "${gone}" removed from tournament panel`, !labels.includes(gone));
+}
+// Scrims keep Punish Teams on a two-row panel.
+const scrimPayload = idpPanelPayload({ ...fakeGroup, tournament: { name: 'Scrim', type: 'SCRIM', teamsPerGroup: 16 } });
+const scrimLabels = scrimPayload.components.flatMap((r) => r.components.map((b) => b.data.label));
+ok('scrim panel keeps Punish Teams', scrimLabels.includes('Punish Teams'));
+ok('scrim panel: two rows', scrimPayload.components.length === 2);
 const ids = payload.components.flatMap((r) => r.components.map((b) => b.data.custom_id));
 ok('all button ids scoped to group', ids.every((x) => x === `idp:${x.split(':')[1]}:g1`));
 ok('unlock button present when locked', ids.includes('idp:unlock:g1'));
 const unlockedPayload = idpPanelPayload({ ...fakeGroup, locked: false });
-ok('lock button present when unlocked', unlockedPayload.components[1].components[0].data.custom_id === 'idp:lock:g1');
+ok('lock button present when unlocked', unlockedPayload.components[0].components[4].data.custom_id === 'idp:lock:g1');
 
 // --- CSV helpers ---
 ok('csvCell quotes commas', csvCell('a,b') === '"a,b"');
