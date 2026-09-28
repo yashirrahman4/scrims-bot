@@ -91,6 +91,7 @@ model Tournament {
   teamLimit        Int
   region           String?
   teamSize         Int                      @default(4)
+  tagsRequired     Int                      @default(4)
   status           EventStatus              @default(DRAFT)
   createdBy        String
   inviteUrl        String?
@@ -122,6 +123,7 @@ model TournamentRegistration {
   status       RegStatus  @default(PENDING)
   slotNo       Int
   groupNo      Int
+  taggedDiscordIds String[] @default([])
   registeredAt DateTime   @default(now())
 
   @@unique([tournamentId, teamId])

@@ -16,14 +16,14 @@ function delegate(model) {
           if (op === 'findMany' || op === 'groupBy') {
             if (model === 'tournament') {
               return [
-                { id: 'e1', name: 'Test Scrim', type: 'SCRIM', status: 'OPEN', date: null, teamLimit: 20, format: 'Scrims — Points Table', maps: [], teamSize: 4, inviteUrl: null },
+                { id: 'e1', name: 'Test Scrim', type: 'SCRIM', status: 'OPEN', date: null, teamLimit: 20, format: 'Scrims — Points Table', maps: [], teamSize: 4, tagsRequired: 4, inviteUrl: null },
               ];
             }
             return [];
           }
           if (op === 'count') return 0;
           if (op === 'findUnique' && model === 'tournament') {
-            return { id: 'e1', name: 'Test Scrim', type: 'SCRIM', status: 'OPEN', date: null, teamLimit: 20, format: 'x', maps: ['Erangel'], teamSize: 4, inviteUrl: null };
+            return { id: 'e1', name: 'Test Scrim', type: 'SCRIM', status: 'OPEN', date: null, teamLimit: 20, format: 'x', maps: ['Erangel'], teamSize: 4, tagsRequired: 4, inviteUrl: null };
           }
           if (op === 'upsert' && model === 'user') return { id: 'dbu1' };
           if (op === 'findFirst' && model === 'team') return null;
@@ -66,7 +66,7 @@ function mockInteraction(kind, customId, fields = {}) {
     isButton: () => kind === 'button',
     isStringSelectMenu: () => kind === 'select',
     isModalSubmit: () => kind === 'modal',
-    isUserSelectMenu: () => false,
+    isUserSelectMenu: () => kind === 'userselect',
     isChannelSelectMenu: () => false,
     isChatInputCommand: () => false,
     fields: { getTextInputValue: (k) => fields[k] || '' },
@@ -106,6 +106,7 @@ const cases = [
   ['scrim:unregister', eventFlows, 'button', 'scrim:unregister'],
   ['event:pick (select)', eventFlows, 'select', 'event:pick:SCRIM'],
   ['event:confirm', eventFlows, 'button', 'event:confirm:e1'],
+  ['event:tags (userselect)', eventFlows, 'userselect', 'event:tags:e1'],
   ['event:registerpost', eventFlows, 'button', 'event:registerpost:e1'],
   ['event:unreg:yes', eventFlows, 'button', 'event:unreg:yes:r1'],
   ['event:unreg:pick (select)', eventFlows, 'select', 'event:unreg:pick:SCRIM'],
@@ -128,6 +129,7 @@ const cases = [
   ['admin:regmgr:role (select)', adminFlows, 'select', 'admin:regmgr:role:e1'],
   ['admin:regedit:submit:name', adminFlows, 'modal', 'admin:regedit:submit:name:e1', { f_value: 'New Name' }],
   ['admin:regedit:submit:slots', adminFlows, 'modal', 'admin:regedit:submit:slots:e1', { f_value: '20' }],
+  ['admin:regedit:submit:tags', adminFlows, 'modal', 'admin:regedit:submit:tags:e1', { f_value: '4' }],
   ['admin:regedit:submit:starttime', adminFlows, 'modal', 'admin:regedit:submit:starttime:e1', { f_value: '2026-10-01 18:00' }],
   ['admin:regedit:submit:successmsg', adminFlows, 'modal', 'admin:regedit:submit:successmsg:e1', { f_value: 'Welcome!' }],
   ['admin:team:suspend', adminFlows, 'button', 'admin:team:suspend:t1'],
@@ -140,8 +142,9 @@ const cases = [
   ['admin:player:pick (select)', adminFlows, 'select', 'admin:player:pick'],
   ['admin:player:rmteam (select)', adminFlows, 'select', 'admin:player:rmteam:p1'],
   ['admin:lock:ch (select)', adminFlows, 'select', 'admin:lock:ch'],
-  ['admin:create:modal1', adminFlows, 'modal', 'admin:create:modal1:SCRIM:x', { e_name: 'S1', e_date: '', e_limit: '20', e_maps: '', e_teamsize: '' }],
-  ['admin:create:modal2', adminFlows, 'modal', 'admin:create:modal2:tok', { e_desc: '', e_region: '', e_invite: '' }],
+  ['admin:create:type (select)', adminFlows, 'select', 'admin:create:type'],
+  ['admin:create:modal1', adminFlows, 'modal', 'admin:create:modal1:SCRIM', { e_name: 'S1', e_date: '', e_limit: '20', e_tags: '4' }],
+  ['admin:create:modal2', adminFlows, 'modal', 'admin:create:modal2:tok', { e_desc: '', e_regstart: '', e_successmsg: '' }],
   ['admin:teams:search', adminFlows, 'modal', 'admin:teams:search', { q: 'TT' }],
   ['admin:players:search', adminFlows, 'modal', 'admin:players:search', { q: 'x' }],
   ['admin:dm:modal', adminFlows, 'modal', 'admin:dm:modal', { dm_title: 'T', dm_message: 'M' }],

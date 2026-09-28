@@ -12,7 +12,6 @@ const {
   EmbedBuilder,
 } = require('discord.js');
 const { prisma } = require('../db');
-const config = require('../config');
 const {
   getSettings,
   requireAdmin,
@@ -69,12 +68,9 @@ function eventDetailEmbed(event, taken) {
     .setDescription(event.description || '—')
     .addFields(
       { name: 'Status', value: `\`${event.status}\``, inline: true },
-      { name: 'Format', value: event.format, inline: true },
       { name: 'Date', value: formatIST(event.date), inline: true },
-      { name: 'Maps', value: event.maps.length ? event.maps.join(', ') : '—', inline: true },
-      { name: 'Team Size', value: String(event.teamSize), inline: true },
-      { name: 'Slots', value: `${taken}/${event.teamLimit}`, inline: true },
-      { name: 'Region', value: event.region || 'Open', inline: true }
+      { name: 'Tags Required', value: String(event.tagsRequired ?? 4), inline: true },
+      { name: 'Slots', value: `${taken}/${event.teamLimit}`, inline: true }
     );
 }
 
@@ -138,6 +134,7 @@ function regManagerEmbed(event, taken) {
       { name: 'Registration Status', value: open ? '🟢 Open' : '🔴 Closed', inline: true },
       { name: 'Total Slots', value: String(event.teamLimit), inline: true },
       { name: 'Registrations', value: String(taken), inline: true },
+      { name: 'Tags Required', value: String(event.tagsRequired ?? 4), inline: true },
       { name: 'Registration Starts', value: event.regStartsAt ? formatIST(event.regStartsAt) : '—', inline: true },
       { name: 'Registration Channel', value: ch(event.regChannelId), inline: true },
       { name: 'Log Channel', value: ch(event.logChannelId), inline: true },
@@ -154,6 +151,7 @@ function regManagerRows(event) {
   const row1 = new ActionRowBuilder().addComponents(
     eb('name', 'Edit Name', '✏️'),
     eb('slots', 'Edit Slots', '🎰'),
+    eb('tags', 'Edit Tags', '🏷️'),
     eb('starttime', 'Edit Start Time', '🕓'),
     eb('successmsg', 'Edit Success Msg', '💬')
   );
@@ -477,6 +475,7 @@ async function handleButton(interaction) {
     const cfg = {
       name: { title: 'Edit Event Name', label: 'Event name', style: TextInputStyle.Short, max: 80, ph: 'Evening Scrims #12' },
       slots: { title: 'Edit Total Slots', label: 'Total slots (2-500)', style: TextInputStyle.Short, max: 4, ph: '20' },
+      tags: { title: 'Edit Tags Required', label: 'Tags required (1-8)', style: TextInputStyle.Short, max: 2, ph: '4' },
       starttime: { title: 'Edit Registration Start', label: 'Start — YYYY-MM-DD HH:MM IST (empty = clear)', style: TextInputStyle.Short, max: 16, ph: '2026-10-01 18:00' },
       successmsg: { title: 'Edit Success Message', label: 'Message (empty = clear)', style: TextInputStyle.Paragraph, max: 500, ph: 'Welcome! Check the rules channel before match day.' },
     }[field];
@@ -631,9 +630,9 @@ async function handleButton(interaction) {
         new TextInputBuilder().setCustomId(cid).setLabel(label).setPlaceholder(placeholder).setStyle(style).setRequired(false).setMaxLength(max)
       );
     modal2.addComponents(
-      mk2('e_desc', 'Description / rules (optional)', 'Room opens 15 min early…', TextInputStyle.Paragraph, 1000),
-      mk2('e_region', 'Region restriction (optional)', 'IN', TextInputStyle.Short, 32),
-      mk2('e_invite', 'IDP / WhatsApp group link (optional)', 'https://chat.whatsapp.com/…', TextInputStyle.Short, 256)
+      mk2('e_desc', 'Description (optional)', 'Room opens 15 min early…', TextInputStyle.Paragraph, 1000),
+      mk2('e_regstart', 'Registration starts (optional)', 'YYYY-MM-DD HH:MM IST (empty = none)', TextInputStyle.Short, 32),
+      mk2('e_successmsg', 'Success message (optional)', 'Welcome! Check the rules channel before match day.', TextInputStyle.Paragraph, 500)
     );
     return interaction.showModal(modal2);
   }
@@ -723,22 +722,8 @@ async function handleSelect(interaction) {
 
   if (id === 'admin:create:type') {
     const type = interaction.values[0];
-    const formats = type === 'SCRIM' ? config.scrimFormats : config.tournamentFormats;
-    const row = new ActionRowBuilder().addComponents(
-      new StringSelectMenuBuilder()
-        .setCustomId(`admin:create:format:${type}`)
-        .setPlaceholder('Select format')
-        .addOptions(formats.map((f) => ({ label: f, value: f })))
-    );
-    return interaction.update({ content: `Format for the ${type === 'SCRIM' ? 'scrim' : 'tournament'}:`, components: [row] });
-  }
-
-  if (id.startsWith('admin:create:format:')) {
-    const type = id.split(':')[3];
-    const format = interaction.values[0];
-    const settings = await getSettings(interaction.guildId);
-    // Discord allows max 5 text inputs per modal — step 1 of 2.
-    const modal = new ModalBuilder().setCustomId(`admin:create:modal1:${type}:${format}`).setTitle(type === 'SCRIM' ? 'Create Scrim (1/2)' : 'Create Tournament (1/2)');
+    // Discord allows max 5 text inputs per modal — step 1 of 2. No format/maps step anymore.
+    const modal = new ModalBuilder().setCustomId(`admin:create:modal1:${type}`).setTitle(type === 'SCRIM' ? 'Create Scrim (1/2)' : 'Create Tournament (1/2)');
     const mk = (cid, label, placeholder, style, required, max) =>
       new ActionRowBuilder().addComponents(
         new TextInputBuilder().setCustomId(cid).setLabel(label).setPlaceholder(placeholder).setStyle(style).setRequired(required).setMaxLength(max)
@@ -747,9 +732,9 @@ async function handleSelect(interaction) {
       mk('e_name', 'Name', 'Evening Scrims #12', TextInputStyle.Short, true, 80),
       mk('e_date', 'Date (optional) — YYYY-MM-DD HH:MM IST', '2026-10-01 19:00', TextInputStyle.Short, false, 16),
       mk('e_limit', 'Team limit (slots)', '20', TextInputStyle.Short, true, 4),
-      mk('e_maps', 'Maps (comma separated, optional)', settings.maps.join(', '), TextInputStyle.Short, false, 100),
-      mk('e_teamsize', 'Team size (starters)', String(settings.teamSize), TextInputStyle.Short, false, 2)
+      mk('e_tags', 'Tags required (1-8)', 'Teammates the leader must tag', TextInputStyle.Short, false, 2)
     );
+    // showModal must NOT be preceded by defer — Discord forbids defer-then-modal.
     return interaction.showModal(modal);
   }
 
@@ -911,6 +896,13 @@ async function handleModal(interaction) {
       if (n < taken) return interaction.editReply({ embeds: [errorEmbed(`Cannot set slots below the current registration count (${taken}).`)] });
       data = { teamLimit: n };
       note = `slots -> ${n}`;
+    } else if (field === 'tags') {
+      const n = parseInt(raw, 10);
+      if (!raw || !Number.isInteger(n) || n < 1 || n > 8) {
+        return interaction.editReply({ embeds: [errorEmbed('Tags required must be a number between 1 and 8.')] });
+      }
+      data = { tagsRequired: n, teamSize: n };
+      note = `tags required -> ${n}`;
     } else if (field === 'starttime') {
       if (!raw) {
         data = { regStartsAt: null };
@@ -933,14 +925,12 @@ async function handleModal(interaction) {
   }
 
   if (id.startsWith('admin:create:modal1:')) {
-    const [, , , type, ...formatParts] = id.split(':');
-    const format = formatParts.join(':');
+    const type = id.split(':')[3];
     await interaction.deferReply({ ephemeral: true });
     const name = interaction.fields.getTextInputValue('e_name').trim();
     const dateRaw = interaction.fields.getTextInputValue('e_date').trim();
     const limitRaw = interaction.fields.getTextInputValue('e_limit').trim();
-    const mapsRaw = interaction.fields.getTextInputValue('e_maps').trim();
-    const teamSizeRaw = interaction.fields.getTextInputValue('e_teamsize').trim();
+    const tagsRaw = interaction.fields.getTextInputValue('e_tags').trim();
 
     const teamLimit = parseInt(limitRaw, 10);
     if (!Number.isInteger(teamLimit) || teamLimit < 2 || teamLimit > 500) {
@@ -951,24 +941,18 @@ async function handleModal(interaction) {
       date = parseDateTimeIST(dateRaw);
       if (!date) return interaction.editReply({ embeds: [errorEmbed('Date must be `YYYY-MM-DD HH:MM` in IST (e.g. 2026-10-01 19:00).')] });
     }
-    const settings = await getSettings(interaction.guildId);
-    const maps = mapsRaw ? mapsRaw.split(',').map((m) => m.trim()).filter(Boolean) : settings.maps;
-    const badMap = maps.find((m) => !settings.maps.some((s) => s.toLowerCase() === m.toLowerCase()));
-    if (badMap) {
-      return interaction.editReply({ embeds: [errorEmbed(`Unknown map "${badMap}". Available: ${settings.maps.join(', ')}`)] });
-    }
-    const teamSize = teamSizeRaw ? parseInt(teamSizeRaw, 10) : settings.teamSize;
-    if (!Number.isInteger(teamSize) || teamSize < 1 || teamSize > 8) {
-      return interaction.editReply({ embeds: [errorEmbed('Team size must be between 1 and 8.')] });
+    const tagsRequired = tagsRaw ? parseInt(tagsRaw, 10) : 4;
+    if (!Number.isInteger(tagsRequired) || tagsRequired < 1 || tagsRequired > 8) {
+      return interaction.editReply({ embeds: [errorEmbed('Tags required must be a number between 1 and 8.')] });
     }
 
-    const token = stashCreation({ type, format, name, date: date ? date.toISOString() : null, teamLimit, maps, teamSize, createdBy: interaction.user.id });
+    const token = stashCreation({ type, name, date: date ? date.toISOString() : null, teamLimit, tagsRequired, createdBy: interaction.user.id });
     // NOTE: a modal submit cannot open another modal (Discord API) — the admin taps Continue, then step 2 opens.
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(`admin:create:step2:${token}`).setLabel('Continue to Step 2').setStyle(ButtonStyle.Primary).setEmoji('➡️')
     );
     return interaction.editReply({
-      content: `✅ Step 1 saved for **${name}**. Press Continue for step 2 (description, region, invite link).`,
+      content: `✅ Step 1 saved for **${name}**. Press Continue for step 2 (description, registration start, success message).`,
       components: [row],
     });
   }
@@ -983,30 +967,37 @@ async function handleModal(interaction) {
     await interaction.deferReply({ ephemeral: true });
     pendingCreations.delete(token);
     const description = interaction.fields.getTextInputValue('e_desc').trim() || null;
-    const region = interaction.fields.getTextInputValue('e_region').trim() || null;
-    const inviteUrl = interaction.fields.getTextInputValue('e_invite').trim() || null;
+    const regStartRaw = interaction.fields.getTextInputValue('e_regstart').trim();
+    const successMessage = interaction.fields.getTextInputValue('e_successmsg').trim() || null;
+    let regStartsAt = null;
+    if (regStartRaw) {
+      regStartsAt = parseDateTimeIST(regStartRaw);
+      if (!regStartsAt) return interaction.editReply({ embeds: [errorEmbed('Registration start must be `YYYY-MM-DD HH:MM` in IST (e.g. 2026-10-01 18:00), or leave empty.')] });
+    }
 
     const event = await prisma.tournament.create({
       data: {
         name: draft.name,
         description,
         type: draft.type,
-        format: draft.format,
+        format: 'Squad',
         date: draft.date ? new Date(draft.date) : null,
-        maps: draft.maps,
+        maps: [],
         teamLimit: draft.teamLimit,
-        region,
-        teamSize: draft.teamSize,
-        inviteUrl,
+        region: null,
+        teamSize: draft.tagsRequired,
+        tagsRequired: draft.tagsRequired,
+        inviteUrl: null,
+        regStartsAt,
+        successMessage,
         status: 'DRAFT',
         createdBy: draft.createdBy,
       },
     });
-    await audit('EVENT_CREATE', interaction.user.id, `${draft.name} (${draft.type}/${draft.format})`);
-    return interaction.editReply({
-      embeds: [successEmbed(`**${draft.name}** created as draft. Open registration when ready.`)],
-      components: eventActionRows(event),
-    });
+    await audit('EVENT_CREATE', interaction.user.id, `${draft.name} (${draft.type}, ${draft.tagsRequired} tags, ${draft.teamLimit} slots)`);
+    // Land directly in the registration manager so channels, role, message and
+    // start time can be finished (or changed) right here during creation.
+    return showRegManager(interaction, event.id, false);
   }
 
   if (id === 'admin:teams:search') {

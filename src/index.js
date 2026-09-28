@@ -8,7 +8,7 @@ const { prisma } = require('./db');
 const { handleInteraction } = require('./router');
 
 // Build tag — bump when shipping a fix so the console shows which code is live.
-const BUILD = '2026-09-28.regmgr-1';
+const BUILD = '2026-09-28.createflow-1';
 console.log(`🤖 scrims-bot ${BUILD} starting...`);
 
 if (!config.token) {
@@ -45,14 +45,16 @@ async function boot() {
     // Self-heal: apply additive schema changes idempotently. HeavenCloud has no
     // shell access for `prisma migrate deploy`, so the bot ensures its own
     // columns exist on startup. Matches prisma/migrations/*_reg_panel_fields.
-    for (const [col, type] of [
-      ['regStartsAt', 'TIMESTAMP(3)'],
-      ['regChannelId', 'TEXT'],
-      ['logChannelId', 'TEXT'],
-      ['successRoleId', 'TEXT'],
-      ['successMessage', 'TEXT'],
+    for (const [table, col, type] of [
+      ['Tournament', 'regStartsAt', 'TIMESTAMP(3)'],
+      ['Tournament', 'regChannelId', 'TEXT'],
+      ['Tournament', 'logChannelId', 'TEXT'],
+      ['Tournament', 'successRoleId', 'TEXT'],
+      ['Tournament', 'successMessage', 'TEXT'],
+      ['Tournament', 'tagsRequired', 'INTEGER NOT NULL DEFAULT 4'],
+      ['TournamentRegistration', 'taggedDiscordIds', `TEXT[] NOT NULL DEFAULT '{}'`],
     ]) {
-      await prisma.$executeRawUnsafe(`ALTER TABLE "Tournament" ADD COLUMN IF NOT EXISTS "${col}" ${type}`);
+      await prisma.$executeRawUnsafe(`ALTER TABLE "${table}" ADD COLUMN IF NOT EXISTS "${col}" ${type}`);
     }
     console.log('✅ Database schema up to date');
     await prisma.$queryRaw`SELECT 1`;
