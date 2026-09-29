@@ -109,6 +109,7 @@ model Tournament {
   idpCategoryId    String?
   idpNamePattern   String?
   slotManagerChannelId String?
+  slotManagerPanelMsgId String?
   idpGroups        IdpGroup[]
   registrations TournamentRegistration[]
   createdAt        DateTime                 @default(now())

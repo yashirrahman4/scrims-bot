@@ -121,17 +121,22 @@ ok('revealed map name shown', rp.embeds[0].data.description.includes('Erangel'))
 ok('revealed map gets thumbnail', !!rp.embeds[0].data.thumbnail && rp.embeds[0].data.thumbnail.url.includes('pubg.com'));
 ok('MAPS has Erangel, Miramar, Rondo', JSON.stringify(idp.MAPS) === JSON.stringify(['Erangel', 'Miramar', 'Rondo']));
 
-// ---------- 5. slot manager panels ----------
-console.log('slot manager panels:');
-const teamP = slot.teamPanelPayload('e1');
-const teamBtns = teamP.components[0].components.map((c) => c.data.label);
-ok('team panel has 4 buttons', teamBtns.length === 4);
-ok('team panel buttons match reference', JSON.stringify(teamBtns) === JSON.stringify(['Cancel My Slot', 'My Groups', 'Change Team Name', 'Swap Groups']));
-ok('team buttons use slot: prefix', teamP.components[0].components.every((c) => c.data.custom_id.startsWith('slot:')));
-const adminP = slot.adminPanelPayload('e1');
-const adminBtns = adminP.components[0].components.map((c) => c.data.label);
-ok('admin panel has Cancel Slot + Transfer IDP Role', JSON.stringify(adminBtns) === JSON.stringify(['Cancel Slot', 'Transfer IDP Role']));
-ok('no row exceeds 5 buttons', teamP.components.concat(adminP.components).every((r) => r.components.length <= 5));
+// ---------- 5. slot manager single panel ----------
+console.log('slot manager single panel:');
+const panel = slot.slotManagerPanel('e1');
+const row1Btns = panel.components[0].components.map((c) => c.data.label);
+const row2Btns = panel.components[1].components.map((c) => c.data.label);
+ok('panel has exactly 2 rows', panel.components.length === 2);
+ok('row 1 is team self-service', JSON.stringify(row1Btns) === JSON.stringify(['Cancel My Slot', 'My Groups', 'Change Team Name']));
+ok('row 2 is admin tools', JSON.stringify(row2Btns) === JSON.stringify(['Swap Groups', 'Cancel Slot', 'Transfer IDP Role']));
+ok('cancel appears once per section (team self-cancel + admin cancel-any)', panel.components.flatMap((r) => r.components).filter((c) => c.data.label.toLowerCase().includes('cancel')).length === 2);
+ok('team row customIds use slot:cancelmy/mygroups/changename',
+  panel.components[0].components.every((c) => /^slot:(cancelmy|mygroups|changename):e1$/.test(c.data.custom_id)));
+ok('admin row customIds use slot:swap/acancel/transfer',
+  panel.components[1].components.every((c) => /^slot:(swap|acancel|transfer):e1$/.test(c.data.custom_id)));
+ok('embed mentions admin tools are staff only', panel.embeds[0].data.description.includes('staff only'));
+ok('embed no longer tells teams to swap groups themselves', !panel.embeds[0].data.description.includes('Click **Swap Groups** to move your team'));
+ok('no row exceeds 5 buttons', panel.components.every((r) => r.components.length <= 5));
 
 // ---------- 6. createIdpGroups: naming + roles + null map ----------
 console.log('createIdpGroups:');

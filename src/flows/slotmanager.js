@@ -1,9 +1,10 @@
 /**
  * Slot Manager — a per-tournament channel (auto-created in the registration
- * channel's category) where teams manage their own slots, plus admin tools.
+ * channel's category) with ONE panel: team self-service buttons on top,
+ * admin tools below (handlers enforce the admin gate).
  *
- * Team panel: Cancel My Slot · My Groups · Change Team Name · Swap Groups
- * Admin panel: Cancel Slot (any team) · Transfer IDP Role
+ * Row 1 (teams): Cancel My Slot · My Groups · Change Team Name
+ * Row 2 (admin): Swap Groups · Cancel Slot · Transfer IDP Role
  */
 const {
   ActionRowBuilder,
@@ -18,7 +19,7 @@ const {
   EmbedBuilder,
 } = require('discord.js');
 const { prisma } = require('../db');
-const { requireAdmin, errorEmbed, successEmbed, audit, postAdminLog, getSettings } = require('../utils');
+const { requireAdmin, errorEmbed, successEmbed, audit, postAdminLog } = require('../utils');
 const { refreshAnnouncementPanel } = require('./events');
 
 const ACTIVE_REG = ['PENDING', 'APPROVED'];
@@ -52,6 +53,69 @@ async function teamDiscordIds(teamId) {
   return [...new Set(ids)];
 }
 
+/** Parse a "tag or slot number" reference: { slotNo } | { tag } | null. */
+function parseSlotRef(raw) {
+  const s = String(raw || '').trim().replace(/^#/, '');
+  if (!s) return null;
+  if (/^\d+$/.test(s)) return { slotNo: parseInt(s, 10) };
+  return { tag: s };
+}
+
+/** Find an active registration by team tag or slot number. */
+async function findActiveReg(tid, raw) {
+  const ref = parseSlotRef(raw);
+  if (!ref) return null;
+  if (ref.slotNo != null) {
+    return prisma.tournamentRegistration.findFirst({
+      where: { tournamentId: tid, slotNo: ref.slotNo, status: { in: ACTIVE_REG } },
+      include: { team: true },
+    });
+  }
+  return prisma.tournamentRegistration.findFirst({
+    where: { tournamentId: tid, status: { in: ACTIVE_REG }, team: { tag: { equals: ref.tag, mode: 'insensitive' } } },
+    include: { team: true },
+  });
+}
+
+/** In-flight group swaps: token -> { tid, firstRegId, secondRegId, expires }. */
+const pendingSwap = new Map();
+const crypto = require('crypto');
+function stashPendingSwap(data) {
+  for (const [k, v] of pendingSwap) if (v.expires < Date.now()) pendingSwap.delete(k);
+  const token = crypto.randomBytes(8).toString('hex');
+  pendingSwap.set(token, { ...data, expires: Date.now() + 10 * 60 * 1000 });
+  return token;
+}
+function takePendingSwap(token) {
+  const v = pendingSwap.get(token);
+  pendingSwap.delete(token);
+  if (!v || v.expires < Date.now()) return null;
+  return v;
+}
+
+/** Move every Discord member of a team from one IDP group role to another. Never throws. */
+async function moveTeamGroupRoles(guild, tid, teamId, fromGroupNo, toGroupNo) {
+  try {
+    const ids = await teamDiscordIds(teamId);
+    const fromGrp = await prisma.idpGroup.findFirst({ where: { tournamentId: tid, groupNo: fromGroupNo } });
+    const toGrp = await prisma.idpGroup.findFirst({ where: { tournamentId: tid, groupNo: toGroupNo } });
+    for (const did of ids) {
+      const m = await guild.members.fetch(did).catch(() => null);
+      if (!m) continue;
+      if (fromGrp?.roleId) {
+        const r = await guild.roles.fetch(fromGrp.roleId).catch(() => null);
+        if (r && m.roles.cache.has(r.id)) await m.roles.remove(r).catch(() => {});
+      }
+      if (toGrp?.roleId) {
+        const r = await guild.roles.fetch(toGrp.roleId).catch(() => null);
+        if (r && !m.roles.cache.has(r.id)) await m.roles.add(r).catch(() => {});
+      }
+    }
+  } catch (e) {
+    console.error('[slotmanager] moveTeamGroupRoles failed:', e.message);
+  }
+}
+
 /** Log a slot-manager action to the tournament log channel + admin audit. Never throws. */
 async function slotLog(interaction, event, title, description, color = 0x5865f2) {
   try {
@@ -72,7 +136,8 @@ async function slotLog(interaction, event, title, description, color = 0x5865f2)
   }
 }
 
-function teamPanelPayload(tid) {
+/** The single merged slot-manager panel: team self-service + admin tools. */
+function slotManagerPanel(tid) {
   const embed = new EmbedBuilder()
     .setColor(0x5865f2)
     .setTitle('🎰 Tourney Slot Manager')
@@ -80,56 +145,118 @@ function teamPanelPayload(tid) {
       'Manage your tournament slot right here — no need to ping the staff.\n\n' +
         '• Click **Cancel My Slot** below to cancel your slot.\n' +
         '• Click **My Groups** to get info about all your slots.\n' +
-        '• Click **Change Team Name** if you want to update your team\'s name.\n' +
-        '• Click **Swap Groups** to move your team to a different group.\n\n' +
-        '_Note that slot cancel is irreversible._'
+        '• Click **Change Team Name** if you want to update your team\'s name.\n\n' +
+        '_Note that slot cancel is irreversible._\n\n' +
+        '**🛠️ Admin tools** (staff only)\n' +
+        '• **Swap Groups** — swap two teams\' slots (groups, roles, slot lists).\n' +
+        '• **Cancel Slot** — cancel any team\'s slot.\n' +
+        '• **Transfer IDP Role** — hand the IDP role to a new holder.'
     )
     .setFooter({ text: 'Your slot · your control' });
   const b = (action, label, style, emoji) =>
     new ButtonBuilder().setCustomId(`slot:${action}:${tid}`).setLabel(label).setStyle(style).setEmoji(emoji);
-  const row = new ActionRowBuilder().addComponents(
+  const teamRow = new ActionRowBuilder().addComponents(
     b('cancelmy', 'Cancel My Slot', ButtonStyle.Danger, '❌'),
     b('mygroups', 'My Groups', ButtonStyle.Success, '👥'),
-    b('changename', 'Change Team Name', ButtonStyle.Primary, '✏️'),
-    b('swap', 'Swap Groups', ButtonStyle.Secondary, '🔀')
+    b('changename', 'Change Team Name', ButtonStyle.Primary, '✏️')
   );
-  return { embeds: [embed], components: [row] };
+  const adminRow = new ActionRowBuilder().addComponents(
+    b('swap', 'Swap Groups', ButtonStyle.Secondary, '🔀'),
+    b('acancel', 'Cancel Slot', ButtonStyle.Danger, '❌'),
+    b('transfer', 'Transfer IDP Role', ButtonStyle.Primary, '🔄')
+  );
+  return { embeds: [embed], components: [teamRow, adminRow] };
 }
 
-function adminPanelPayload(tid) {
-  const embed = new EmbedBuilder()
-    .setColor(0xed4245)
-    .setTitle('🛠️ Slot Manager — Admin Tools')
-    .setDescription('• **Cancel Slot** — cancel any team\'s slot.\n• **Transfer IDP Role** — hand the IDP role to a new holder.')
-    .setFooter({ text: 'Staff only' });
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`slot:acancel:${tid}`).setLabel('Cancel Slot').setStyle(ButtonStyle.Danger).setEmoji('❌'),
-    new ButtonBuilder().setCustomId(`slot:transfer:${tid}`).setLabel('Transfer IDP Role').setStyle(ButtonStyle.Primary).setEmoji('🔄')
-  );
-  return { embeds: [embed], components: [row] };
+/** True when a channel message looks like one of the legacy slot-manager panels. */
+function isLegacySlotPanel(msg, botId) {
+  if (!msg || msg.author?.id !== botId) return false;
+  const rows = msg.components || [];
+  return rows.some((r) => (r.components || []).some((c) => String(c.customId || '').startsWith('slot:')));
 }
 
 /**
  * Create the #slot-manager channel in the registration channel's category
- * (if it doesn't exist yet) and post both panels. Returns the channel.
+ * (if it doesn't exist yet) and make sure it holds exactly ONE panel.
+ * Existing panels are edited in place; legacy two-panel setups are cleaned up.
+ * Returns the channel.
  */
 async function ensureSlotManager(client, guild, event) {
-  if (event.slotManagerChannelId) {
-    const existing = await guild.channels.fetch(event.slotManagerChannelId).catch(() => null);
-    if (existing && existing.isTextBased()) return existing;
+  const fresh = await prisma.tournament.findUnique({ where: { id: event.id } }).catch(() => null);
+  const tourney = fresh || event;
+  let ch = null;
+  if (tourney.slotManagerChannelId) {
+    ch = await guild.channels.fetch(tourney.slotManagerChannelId).catch(() => null);
+    if (ch && !ch.isTextBased()) ch = null;
   }
-  const regCh = event.regChannelId ? await guild.channels.fetch(event.regChannelId).catch(() => null) : null;
-  const ch = await guild.channels.create({
-    name: 'slot-manager',
-    type: ChannelType.GuildText,
-    parent: regCh?.parentId || null,
-    reason: `Slot Manager for ${event.name}`,
-  });
-  await ch.send(teamPanelPayload(event.id));
-  await ch.send(adminPanelPayload(event.id));
-  await prisma.tournament.update({ where: { id: event.id }, data: { slotManagerChannelId: ch.id } });
-  console.log(`[slotmanager] created #slot-manager for ${event.name}`);
+  if (!ch) {
+    const regCh = tourney.regChannelId ? await guild.channels.fetch(tourney.regChannelId).catch(() => null) : null;
+    ch = await guild.channels.create({
+      name: 'slot-manager',
+      type: ChannelType.GuildText,
+      parent: regCh?.parentId || null,
+      reason: `Slot Manager for ${tourney.name}`,
+    });
+    await prisma.tournament.update({ where: { id: tourney.id }, data: { slotManagerChannelId: ch.id } }).catch(() => {});
+  }
+  const payload = slotManagerPanel(tourney.id);
+  // Fast path: our tracked single panel — just refresh it.
+  if (tourney.slotManagerPanelMsgId) {
+    const msg = await ch.messages.fetch(tourney.slotManagerPanelMsgId).catch(() => null);
+    if (msg) {
+      await msg.edit(payload).catch(() => {});
+      return ch;
+    }
+  }
+  // Legacy path: delete the old two panels (team + admin), post one merged panel.
+  try {
+    const recent = await ch.messages.fetch({ limit: 30 }).catch(() => null);
+    const botId = client.user?.id;
+    if (recent && botId) {
+      for (const msg of recent.values()) {
+        if (isLegacySlotPanel(msg, botId) && msg.id !== tourney.slotManagerPanelMsgId) {
+          await msg.delete().catch(() => {});
+        }
+      }
+    }
+  } catch (e) {
+    console.error('[slotmanager] legacy panel cleanup failed:', e.message);
+  }
+  const posted = await ch.send(payload);
+  await prisma.tournament
+    .update({ where: { id: tourney.id }, data: { slotManagerChannelId: ch.id, slotManagerPanelMsgId: posted.id } })
+    .catch(() => {});
+  console.log(`[slotmanager] single panel posted for ${tourney.name}`);
   return ch;
+}
+
+/**
+ * One-time startup sweep: tournaments whose channel predates the merged panel
+ * get the legacy two-panel messages replaced with the single panel.
+ */
+async function reconcileLegacySlotPanels(client) {
+  try {
+    const legacy = await prisma.tournament.findMany({
+      where: { slotManagerChannelId: { not: null }, slotManagerPanelMsgId: null },
+      select: { id: true, name: true, slotManagerChannelId: true, regChannelId: true },
+    });
+    for (const t of legacy) {
+      try {
+        const guilds = [...client.guilds.cache.values()];
+        for (const guild of guilds) {
+          const ch = await guild.channels.fetch(t.slotManagerChannelId).catch(() => null);
+          if (ch) {
+            await ensureSlotManager(client, guild, t);
+            break;
+          }
+        }
+      } catch (e) {
+        console.error('[slotmanager] legacy reconcile failed for', t.name, e.message);
+      }
+    }
+  } catch (e) {
+    console.error('[slotmanager] legacy reconcile sweep failed:', e.message);
+  }
 }
 
 /** Announce to the slot-manager channel. Never throws. */
@@ -263,30 +390,85 @@ async function handleButton(interaction) {
     return interaction.showModal(modal);
   }
 
-  if (action === 'swap') {
-    const event = await getEvent(tid);
-    if (!event) return interaction.reply({ embeds: [errorEmbed('Tournament not found.')], ephemeral: true });
-    const found = await myTeamReg(tid, interaction.user.id);
-    if (!found) return interaction.reply({ embeds: [errorEmbed('You have no active slot in this tournament.')], ephemeral: true });
-    const settings = await getSettings(interaction.guildId);
-    const perGroup = event.teamsPerGroup || settings?.groupSize || 20;
-    const nGroups = Math.max(Math.ceil(event.teamLimit / perGroup), 1);
-    const modal = new ModalBuilder().setCustomId(`slot:swap:modal:${tid}`).setTitle('Swap Groups');
+  // ----- admin tools -----
+  // Swap Groups (ADMIN ONLY): pick team 1, then team 2, confirm — their
+  // group+slot numbers exchange, roles move, both slot lists re-post.
+  if (action === 'swap' && parts.length === 3) {
+    if (!(await requireAdmin(interaction))) return;
+    const modal = new ModalBuilder().setCustomId(`slot:swap:first:${tid}`).setTitle('Swap Groups — Team 1');
     modal.addComponents(
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
-          .setCustomId('s_group')
-          .setLabel(`New group number (1-${nGroups}) — now: ${found.reg.groupNo}`)
+          .setCustomId('t_ref')
+          .setLabel('First team — tag or slot number')
           .setStyle(TextInputStyle.Short)
           .setRequired(true)
-          .setMaxLength(4)
-          .setPlaceholder(`e.g. ${found.reg.groupNo === 1 ? 2 : 1}`)
+          .setMaxLength(32)
+          .setPlaceholder('e.g. BRV or 12')
       )
     );
     return interaction.showModal(modal);
   }
 
-  // ----- admin tools -----
+  if (id.startsWith('slot:swap:yes:')) {
+    if (!(await requireAdmin(interaction))) return;
+    const token = id.split(':')[3];
+    const pending = takePendingSwap(token);
+    if (!pending?.secondRegId) {
+      return interaction.reply({ embeds: [errorEmbed('This swap expired. Start again with Swap Groups.')], ephemeral: true });
+    }
+    await interaction.deferReply({ ephemeral: true });
+    const regs = await prisma.tournamentRegistration.findMany({
+      where: { id: { in: [pending.firstRegId, pending.secondRegId] } },
+      include: { team: true, tournament: true },
+    });
+    const a = regs.find((r) => r.id === pending.firstRegId);
+    const b = regs.find((r) => r.id === pending.secondRegId);
+    if (!a || !b || !ACTIVE_REG.includes(a.status) || !ACTIVE_REG.includes(b.status)) {
+      return interaction.editReply({ embeds: [errorEmbed('One of the teams no longer has an active slot. Swap aborted.')] });
+    }
+    const { postSlotList } = require('./idp');
+    const gA = a.groupNo, sA = a.slotNo, gB = b.groupNo, sB = b.slotNo;
+    await prisma.$transaction([
+      prisma.tournamentRegistration.update({ where: { id: a.id }, data: { groupNo: gB, slotNo: sB } }),
+      prisma.tournamentRegistration.update({ where: { id: b.id }, data: { groupNo: gA, slotNo: sA } }),
+    ]);
+    // Move Discord group roles along with each team.
+    await moveTeamGroupRoles(interaction.guild, pending.tid, a.teamId, gA, gB);
+    await moveTeamGroupRoles(interaction.guild, pending.tid, b.teamId, gB, gA);
+    // Refresh both affected slot lists.
+    try {
+      const groups = await prisma.idpGroup.findMany({
+        where: { tournamentId: pending.tid, groupNo: { in: [gA, gB] } },
+        include: { tournament: true },
+      });
+      for (const g of groups) await postSlotList(interaction.client, interaction.guild, g);
+    } catch (e) {
+      console.error('[slotmanager] swap slot-list refresh failed:', e.message);
+    }
+    const event = a.tournament;
+    await slotLog(
+      interaction, event, 'GROUPS_SWAPPED',
+      `**[${a.team.tag}] ${a.team.name}** (G${gA}/S${sA}) ⇄ **[${b.team.tag}] ${b.team.name}** (G${gB}/S${sB})`
+    );
+    await audit('GROUPS_SWAPPED', interaction.user.id, `${a.team.tag} (G${gA}/S${sA}) ⇄ ${b.team.tag} (G${gB}/S${sB})`);
+    return interaction.editReply({
+      embeds: [
+        successEmbed(
+          `Swapped:\n• **[${a.team.tag}] ${a.team.name}** → Group **${gB}**, Slot **${sB}**\n` +
+            `• **[${b.team.tag}] ${b.team.name}** → Group **${gA}**, Slot **${sA}**\n` +
+            `Roles moved and both slot lists re-posted.`
+        ),
+      ],
+    });
+  }
+
+  if (id.startsWith('slot:swap:no:')) {
+    if (!(await requireAdmin(interaction))) return;
+    takePendingSwap(id.split(':')[3]);
+    return interaction.update({ content: 'Swap cancelled.', embeds: [], components: [] });
+  }
+
   if (action === 'acancel' && parts.length === 3) {
     if (!(await requireAdmin(interaction))) return;
     const modal = new ModalBuilder().setCustomId(`slot:acancel:modal:${tid}`).setTitle('Cancel a Team Slot');
@@ -419,45 +601,76 @@ async function handleModal(interaction) {
     return interaction.editReply({ embeds: [successEmbed(`Team name updated: **${old}** → **${raw}**.`)] });
   }
 
-  if (id.startsWith('slot:swap:modal:')) {
+  // Swap step 1 -> ask for team 2. / Swap step 2 -> confirm screen.
+  if (id.startsWith('slot:swap:first:')) {
+    if (!(await requireAdmin(interaction))) return;
     const tid = id.split(':')[3];
-    await interaction.deferReply({ ephemeral: true });
-    const event = await getEvent(tid);
-    if (!event) return interaction.editReply({ embeds: [errorEmbed('Tournament not found.')] });
-    const settings = await getSettings(interaction.guildId);
-    const perGroup = event.teamsPerGroup || settings?.groupSize || 20;
-    const nGroups = Math.max(Math.ceil(event.teamLimit / perGroup), 1);
-    const to = parseInt(interaction.fields.getTextInputValue('s_group').trim(), 10);
-    if (!Number.isInteger(to) || to < 1 || to > nGroups) {
-      return interaction.editReply({ embeds: [errorEmbed(`Enter a group number between 1 and ${nGroups}.`)] });
+    const raw = interaction.fields.getTextInputValue('t_ref');
+    const first = await findActiveReg(tid, raw);
+    if (!first) {
+      return interaction.reply({ embeds: [errorEmbed(`No active slot found for "${raw}". Try the team tag or slot number.`)], ephemeral: true });
     }
-    const found = await myTeamReg(tid, interaction.user.id);
-    if (!found) return interaction.editReply({ embeds: [errorEmbed('You have no active slot in this tournament.')] });
-    if (to === found.reg.groupNo) return interaction.editReply({ embeds: [errorEmbed(`Your team is already in Group ${to}.`)] });
-    const from = found.reg.groupNo;
-    await prisma.tournamentRegistration.update({ where: { id: found.reg.id }, data: { groupNo: to } });
-    // Move the IDP group roles along with the team.
-    try {
-      const ids = await teamDiscordIds(found.team.id);
-      const fromGrp = await prisma.idpGroup.findFirst({ where: { tournamentId: tid, groupNo: from } });
-      const toGrp = await prisma.idpGroup.findFirst({ where: { tournamentId: tid, groupNo: to } });
-      for (const did of ids) {
-        const m = await interaction.guild.members.fetch(did).catch(() => null);
-        if (!m) continue;
-        if (fromGrp?.roleId) {
-          const r = await interaction.guild.roles.fetch(fromGrp.roleId).catch(() => null);
-          if (r && m.roles.cache.has(r.id)) await m.roles.remove(r).catch(() => {});
-        }
-        if (toGrp?.roleId) {
-          const r = await interaction.guild.roles.fetch(toGrp.roleId).catch(() => null);
-          if (r && !m.roles.cache.has(r.id)) await m.roles.add(r).catch(() => {});
-        }
-      }
-    } catch (e) {
-      console.error('[slotmanager] swap role move failed:', e.message);
+    const token = stashPendingSwap({ tid, firstRegId: first.id });
+    const modal = new ModalBuilder().setCustomId(`slot:swap:second:${token}`).setTitle('Swap Groups — Team 2');
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('t_ref')
+          .setLabel('Second team — tag or slot number')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(32)
+          .setPlaceholder('e.g. XYZ or 27')
+      )
+    );
+    return interaction.showModal(modal);
+  }
+
+  if (id.startsWith('slot:swap:second:')) {
+    if (!(await requireAdmin(interaction))) return;
+    const token = id.split(':')[3];
+    const pending = pendingSwap.get(token);
+    if (!pending) {
+      return interaction.reply({ embeds: [errorEmbed('This swap expired. Start again with Swap Groups.')], ephemeral: true });
     }
-    await slotLog(interaction, event, 'GROUP_SWAPPED', `**[${found.team.tag}] ${found.team.name}** moved Group ${from} → Group ${to} (Slot ${found.reg.slotNo})`);
-    return interaction.editReply({ embeds: [successEmbed(`Your team moved from **Group ${from}** to **Group ${to}**.`)] });
+    const raw = interaction.fields.getTextInputValue('t_ref');
+    const second = await findActiveReg(pending.tid, raw);
+    if (!second) {
+      return interaction.reply({ embeds: [errorEmbed(`No active slot found for "${raw}". Try the team tag or slot number.`)], ephemeral: true });
+    }
+    if (second.id === pending.firstRegId) {
+      return interaction.reply({ embeds: [errorEmbed('Pick a different team — you selected the same team twice.')], ephemeral: true });
+    }
+    const first = await prisma.tournamentRegistration.findUnique({
+      where: { id: pending.firstRegId },
+      include: { team: true },
+    });
+    if (!first || !ACTIVE_REG.includes(first.status)) {
+      takePendingSwap(token);
+      return interaction.reply({ embeds: [errorEmbed('The first team no longer has an active slot. Start over.')], ephemeral: true });
+    }
+    pending.secondRegId = second.id;
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`slot:swap:yes:${token}`).setLabel('Yes, swap them').setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId(`slot:swap:no:${token}`).setLabel('Cancel').setStyle(ButtonStyle.Secondary)
+    );
+    const sameGroup = first.groupNo === second.groupNo;
+    return interaction.reply({
+      ephemeral: true,
+      embeds: [
+        new EmbedBuilder()
+          .setColor(0xfaa81a)
+          .setTitle('🔀 Confirm Group Swap')
+          .setDescription(
+            `• **[${first.team.tag}] ${first.team.name}** — Group **${first.groupNo}**, Slot **${first.slotNo}**\n` +
+              `• **[${second.team.tag}] ${second.team.name}** — Group **${second.groupNo}**, Slot **${second.slotNo}**\n\n` +
+              `Their group + slot numbers will **exchange**, Discord group roles move with each team, ` +
+              `and both group slot lists will be re-posted.` +
+              (sameGroup ? '\n\n⚠️ Both teams are in the same group — only their **slot numbers** will exchange.' : '')
+          ),
+      ],
+      components: [row],
+    });
   }
 
   if (id.startsWith('slot:acancel:modal:')) {
@@ -493,4 +706,4 @@ async function handleModal(interaction) {
   }
 }
 
-module.exports = { handle, ensureSlotManager, teamPanelPayload, adminPanelPayload, myTeamReg };
+module.exports = { handle, ensureSlotManager, reconcileLegacySlotPanels, slotManagerPanel, myTeamReg, parseSlotRef, findActiveReg };

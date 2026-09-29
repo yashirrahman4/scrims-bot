@@ -202,6 +202,35 @@ function idpPanelPayload(group) {
 }
 
 /** Returns `<@&roleId>` for the group's role, ensuring the role is mentionable. Never throws. */
+/**
+ * Post a fresh slot list to a group's channel (with the group's role ping).
+ * Extracted so other flows (e.g. group swaps) can refresh it. Never throws.
+ */
+async function postSlotList(client, guild, group) {
+  try {
+    const regs = await groupRegs(group);
+    const lines = regs.map(
+      (r) => `**Slot ${r.slotNo}** — [${r.team.tag}] ${r.team.name} — <@${r.team.owner.discordId}>${r.qualified ? ' ✅ Qualified' : ''}`
+    );
+    const ch = await groupChannel(client, group);
+    if (!ch) return false;
+    const rolePing = await groupRolePing(guild, group);
+    await ch.send({
+      ...(rolePing ? { content: rolePing } : {}),
+      embeds: [
+        new EmbedBuilder()
+          .setColor(0x57f287)
+          .setTitle(`📋 Slot List — ${groupLabel(group)} · ${group.tournament.name}`)
+          .setDescription(lines.join('\n') || 'No teams in this group yet.'),
+      ],
+    });
+    return true;
+  } catch (e) {
+    console.error('[idp] postSlotList failed:', e.message);
+    return false;
+  }
+}
+
 async function groupRolePing(guild, group) {
   try {
     if (!group?.roleId) return '';
@@ -390,22 +419,9 @@ async function handleButton(interaction) {
     await interaction.deferReply({ ephemeral: true });
     const group = await getGroup(gid);
     if (!group) return interaction.editReply({ content: 'Group not found.', embeds: [], components: [] });
+    const ok = await postSlotList(interaction.client, interaction.guild, group);
+    if (!ok) return interaction.editReply({ content: 'Group channel not found.', embeds: [], components: [] });
     const regs = await groupRegs(group);
-    const lines = regs.map(
-      (r) => `**Slot ${r.slotNo}** — [${r.team.tag}] ${r.team.name} — <@${r.team.owner.discordId}>${r.qualified ? ' ✅ Qualified' : ''}`
-    );
-    const ch = await groupChannel(interaction.client, group);
-    if (!ch) return interaction.editReply({ embeds: [errorEmbed('Group channel not found.')] });
-    const rolePing = await groupRolePing(interaction.guild, group);
-    await ch.send({
-      ...(rolePing ? { content: rolePing } : {}),
-      embeds: [
-        new EmbedBuilder()
-          .setColor(0x57f287)
-          .setTitle(`📋 Slot List — ${groupLabel(group)} · ${group.tournament.name}`)
-          .setDescription(lines.join('\n') || 'No teams in this group yet.'),
-      ],
-    });
     await idpAudit(interaction, 'IDP_SLOTLIST', `${group.tournament.name} ${groupLabel(group)}: slot list posted (${regs.length} teams)`);
     return interaction.editReply({ content: `✅ Slot list posted in <#${group.channelId}>.` });
   }
@@ -731,4 +747,4 @@ async function handleModal(interaction) {
   }
 }
 
-module.exports = { handle, createIdpGroups, groupCount, idpPanelPayload, groupLabel, parseNamePattern, groupDisplayName, groupChannelName, assignRoleToIds, refreshPanel, groupRolePing, MAPS };
+module.exports = { handle, createIdpGroups, groupCount, idpPanelPayload, groupLabel, parseNamePattern, groupDisplayName, groupChannelName, assignRoleToIds, refreshPanel, groupRolePing, postSlotList, MAPS };

@@ -8,7 +8,7 @@ const { prisma } = require('./db');
 const { handleInteraction } = require('./router');
 
 // Build tag — bump when shipping a fix so the console shows which code is live.
-const BUILD = '2026-09-29.idpping-1';
+const BUILD = '2026-09-29.slotmerge-1';
 console.log(`🤖 scrims-bot ${BUILD} starting...`);
 
 if (!config.token) {
@@ -32,6 +32,9 @@ const client = new Client({
 
 client.once(Events.ClientReady, (c) => {
   console.log(`✅ Logged in as ${c.user.tag}`);
+  // One-time sweep: replace legacy two-panel slot-manager messages with the single panel.
+  const { reconcileLegacySlotPanels } = require('./flows/slotmanager');
+  reconcileLegacySlotPanels(c).catch((e) => console.error('[slotmanager] startup sweep failed:', e.message));
 });
 
 client.on(Events.InteractionCreate, (interaction) => {
@@ -59,6 +62,7 @@ async function boot() {
       ['Tournament', 'idpCategoryId', 'TEXT'],
       ['Tournament', 'idpNamePattern', 'TEXT'],
       ['Tournament', 'slotManagerChannelId', 'TEXT'],
+      ['Tournament', 'slotManagerPanelMsgId', 'TEXT'],
       ['IdpGroup', 'roleId', 'TEXT'],
       ['TournamentRegistration', 'taggedDiscordIds', `TEXT[] NOT NULL DEFAULT '{}'`],
       ['TournamentRegistration', 'qualified', 'BOOLEAN NOT NULL DEFAULT false'],
