@@ -201,6 +201,19 @@ function idpPanelPayload(group) {
   return { embeds: [embed], components: rows };
 }
 
+/** Returns `<@&roleId>` for the group's role, ensuring the role is mentionable. Never throws. */
+async function groupRolePing(guild, group) {
+  try {
+    if (!group?.roleId) return '';
+    const role = await guild.roles.fetch(group.roleId).catch(() => null);
+    if (!role) return '';
+    if (!role.mentionable) await role.setMentionable(true).catch(() => {});
+    return `<@&${role.id}>`;
+  } catch {
+    return '';
+  }
+}
+
 /** Re-render the schedule panel message inside the group's channel. Never throws. */
 async function refreshPanel(client, groupId) {
   try {
@@ -284,7 +297,7 @@ async function createIdpGroups(client, guild, eventId, guildId, namePattern) {
         parent: category.id,
         permissionOverwrites: [{ id: guild.roles.everyone.id, deny: [PermissionFlagsBits.SendMessages] }],
       });
-      const role = await guild.roles.create({ name: displayName.slice(0, 100), reason: `IDP group role for ${event.name}` }).catch(() => null);
+      const role = await guild.roles.create({ name: displayName.slice(0, 100), mentionable: true, reason: `IDP group role for ${event.name}` }).catch(() => null);
       const grp = await prisma.idpGroup.create({
         data: {
           tournamentId: event.id,
@@ -383,7 +396,9 @@ async function handleButton(interaction) {
     );
     const ch = await groupChannel(interaction.client, group);
     if (!ch) return interaction.editReply({ embeds: [errorEmbed('Group channel not found.')] });
+    const rolePing = await groupRolePing(interaction.guild, group);
     await ch.send({
+      ...(rolePing ? { content: rolePing } : {}),
       embeds: [
         new EmbedBuilder()
           .setColor(0x57f287)
@@ -628,10 +643,11 @@ async function handleSelect(interaction) {
       include: { team: { include: { owner: true, members: { include: { player: true } } } } },
     });
     const ch = await groupChannel(interaction.client, group);
+    const rolePing = await groupRolePing(interaction.guild, group);
     if (kind === 'punish') {
       await prisma.tournamentRegistration.updateMany({ where: { id: { in: pending.regIds } }, data: { status: 'DISQUALIFIED' } });
       const msg = `⚠️ **Punished (disqualified)** in ${groupLabel(group)}:\n${regs.map((r) => `• **[${r.team.tag}]** ${r.team.name} (was Slot ${r.slotNo})`).join('\n')}`;
-      if (ch) await ch.send({ embeds: [new EmbedBuilder().setColor(0xed4245).setDescription(msg)] });
+      if (ch) await ch.send({ ...(rolePing ? { content: rolePing } : {}), embeds: [new EmbedBuilder().setColor(0xed4245).setDescription(msg)] });
       await idpAudit(interaction, 'IDP_PUNISH', `${group.tournament.name} ${groupLabel(group)}: disqualified ${regs.map((r) => r.team.tag).join(', ')}`);
       return interaction.editReply({ content: `✅ Disqualified **${regs.length}** team(s).`, embeds: [], components: [] });
     }
@@ -647,7 +663,7 @@ async function handleSelect(interaction) {
     const msg =
       `✅ **Qualified** from ${groupLabel(group)}` + (role ? ` — role **${role.name}** given to **${given}** member(s)` : '') + `:\n` +
       regs.map((r) => `• **[${r.team.tag}]** ${r.team.name} (Slot ${r.slotNo})`).join('\n');
-    if (ch) await ch.send({ embeds: [new EmbedBuilder().setColor(0x57f287).setDescription(msg)] });
+    if (ch) await ch.send({ ...(rolePing ? { content: rolePing } : {}), embeds: [new EmbedBuilder().setColor(0x57f287).setDescription(msg)] });
     await idpAudit(interaction, 'IDP_QUALIFY', `${group.tournament.name} ${groupLabel(group)}: qualified ${regs.map((r) => r.team.tag).join(', ')}${role ? ` (+${role.name})` : ''}`);
     return interaction.editReply({ content: `✅ Marked **${regs.length}** team(s) qualified${role ? ` and gave **${role.name}** to **${given}** member(s)` : ''}.`, embeds: [], components: [] });
   }
@@ -705,8 +721,9 @@ async function handleModal(interaction) {
     const mentions = [...new Set(regs.map((r) => r.team.owner?.discordId).filter(Boolean))];
     const ch = await groupChannel(interaction.client, group);
     if (!ch) return interaction.editReply({ embeds: [errorEmbed('Group channel not found.')] });
+    const rolePing = await groupRolePing(interaction.guild, group);
     await ch.send({
-      content: mentions.map((mid) => `<@${mid}>`).join(' '),
+      content: [rolePing, ...mentions.map((mid) => `<@${mid}>`)].filter(Boolean).join(' '),
       embeds: [new EmbedBuilder().setColor(0xf1c40f).setTitle(`🔔 ${title}`).setDescription(message)],
     });
     await idpAudit(interaction, 'IDP_REMIND', `${group.tournament.name} ${groupLabel(group)}: reminder "${title}" to ${mentions.length} owners`);
@@ -714,4 +731,4 @@ async function handleModal(interaction) {
   }
 }
 
-module.exports = { handle, createIdpGroups, groupCount, idpPanelPayload, groupLabel, parseNamePattern, groupDisplayName, groupChannelName, assignRoleToIds, refreshPanel, MAPS };
+module.exports = { handle, createIdpGroups, groupCount, idpPanelPayload, groupLabel, parseNamePattern, groupDisplayName, groupChannelName, assignRoleToIds, refreshPanel, groupRolePing, MAPS };

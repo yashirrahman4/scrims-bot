@@ -189,7 +189,7 @@ model IdpMatch {
   idpGroupId String
   idpGroup  IdpGroup @relation(fields: [idpGroupId], references: [id], onDelete: Cascade)
   matchNo   Int
-  map       String   @default("Erangel")
+  map       String?
   idpAt     String?
   startAt   String?
   createdAt DateTime @default(now())

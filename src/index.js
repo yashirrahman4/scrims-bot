@@ -8,7 +8,7 @@ const { prisma } = require('./db');
 const { handleInteraction } = require('./router');
 
 // Build tag — bump when shipping a fix so the console shows which code is live.
-const BUILD = '2026-09-29.panelplus-1';
+const BUILD = '2026-09-29.idpping-1';
 console.log(`🤖 scrims-bot ${BUILD} starting...`);
 
 if (!config.token) {
@@ -81,9 +81,11 @@ async function boot() {
     await prisma.$executeRawUnsafe(`CREATE UNIQUE INDEX IF NOT EXISTS "IdpGroup_tournamentId_groupNo_key" ON "IdpGroup"("tournamentId", "groupNo")`);
     await prisma.$executeRawUnsafe(`CREATE TABLE IF NOT EXISTS "IdpMatch" (
       "id" TEXT NOT NULL, "idpGroupId" TEXT NOT NULL, "matchNo" INTEGER NOT NULL,
-      "map" TEXT NOT NULL DEFAULT 'Erangel', "idpAt" TEXT, "startAt" TEXT,
+      "map" TEXT, "idpAt" TEXT, "startAt" TEXT,
       "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
       CONSTRAINT "IdpMatch_pkey" PRIMARY KEY ("id"))`);
+    // Older DBs created "map" as NOT NULL — matches are designed to allow "not revealed yet".
+    await prisma.$executeRawUnsafe(`ALTER TABLE "IdpMatch" ALTER COLUMN "map" DROP NOT NULL`);
     await prisma.$executeRawUnsafe(`CREATE UNIQUE INDEX IF NOT EXISTS "IdpMatch_idpGroupId_matchNo_key" ON "IdpMatch"("idpGroupId", "matchNo")`);
     console.log('✅ Database schema up to date');
     await prisma.$queryRaw`SELECT 1`;

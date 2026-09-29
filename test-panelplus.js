@@ -25,12 +25,24 @@ function delegate(model) {
           if (model === 'guildSettings' && op === 'findUnique') return { guildId: 'g1', groupSize: 20, adminRoleIds: [] };
           if (model === 'auditLog' && op === 'create') return { id: 'a1' };
           if (model === 'idpGroup' && op === 'findMany') return state.groups;
-          if (model === 'idpGroup' && op === 'findUnique') return state.groups.find((g) => g.id === args?.where?.id) || null;
+          if (model === 'idpGroup' && op === 'findUnique') {
+            const g = state.groups.find((x) => x.id === args?.where?.id) || null;
+            return g ? { ...g, matches: (state.matches || []).filter((m) => m.idpGroupId === g.id) } : null;
+          }
+          if (model === 'tournamentRegistration' && op === 'findMany') return [];
           if (model === 'idpGroup' && op === 'count') return state.groups.length;
           if (model === 'idpGroup' && op === 'update') {
             const g = state.groups.find((x) => x.id === args.where.id);
             if (g) Object.assign(g, args.data);
             return g;
+          }
+          if (model === 'idpMatch' && op === 'create') {
+            const m = { id: `m${(state.matches?.length || 0) + 1}`, ...args.data };
+            state.matches = [...(state.matches || []), m];
+            return m;
+          }
+          if (model === 'idpMatch' && op === 'findUnique') {
+            return (state.matches || []).find((m) => m.id === args?.where?.id) || null;
           }
           return null;
         };
@@ -284,5 +296,109 @@ async function t(name, fn) {
     assert(ix._edit.embeds[0].data.description && ix._edit.embeds[0].data.description.includes('❌'), 'error shown');
   });
 
-  console.log(`\n${passed} panelplus tests passed${process.exitCode ? ' (with failures)' : ''}`);
+/* ---------- idpping-1 batch: match editor fix + group-role pings ---------- */
+
+  const idp = require('./src/flows/idp.js');
+  const createdMatches = [];
+  // extend the prisma stub used by the earlier harness: idpMatch model
+  // (the proxy in this file returns null for unknown ops — patch via state)
+  const origIdpMatch = [];
+  state.matches = [];
+
+  function mockIx2(kind, customId, values = [], extra = {}) {
+    const ix = {
+      customId, values, guildId: 'g1',
+      user: { id: 'u1', username: 'tester' },
+      guild: {
+        members: { fetch: async () => null },
+        roles: {
+          fetch: async (rid) => ({ id: rid, mentionable: extra.roleMentionable ?? false, setMentionable: async (v) => { extra.onSetMentionable?.(v); } }),
+        },
+        channels: { fetch: async (id) => ({ id, isTextBased: () => true }) },
+      },
+      client: {},
+      member: { permissions: { has: () => true }, roles: { cache: [] } },
+      replied: false, deferred: false,
+      isButton: () => kind === 'button',
+      isStringSelectMenu: () => kind === 'select',
+      isModalSubmit: () => kind === 'modal',
+      fields: { getTextInputValue: (k) => extra.fields?.[k] ?? '' },
+      deferReply: async () => { ix.deferred = true; },
+      deferUpdate: async () => { ix.deferred = true; },
+      reply: async (p) => { ix._reply = p; ix.replied = true; },
+      editReply: async (p) => { ix._edit = p; },
+      showModal: async (m) => { ix._modal = m; },
+      ...extra.ix,
+    };
+    return ix;
+  }
+
+  await t('groupRolePing returns role mention and makes role mentionable', async () => {
+    let setTo = null;
+    const ix = mockIx2('button', 'x', [], { roleMentionable: false, onSetMentionable: (v) => { setTo = v; } });
+    const ping = await idp.groupRolePing(ix.guild, { roleId: 'role9' });
+    assert.strictEqual(ping, '<@&role9>');
+    assert.strictEqual(setTo, true, 'should flip mentionable on');
+  });
+
+  await t('groupRolePing skips setMentionable when already mentionable', async () => {
+    let called = false;
+    const ix = mockIx2('button', 'x', [], { roleMentionable: true, onSetMentionable: () => { called = true; } });
+    const ping = await idp.groupRolePing(ix.guild, { roleId: 'role9' });
+    assert.strictEqual(ping, '<@&role9>');
+    assert(!called, 'no need to touch an already-mentionable role');
+  });
+
+  await t('groupRolePing returns empty string when the group has no role', async () => {
+    const ix = mockIx2('button', 'x');
+    assert.strictEqual(await idp.groupRolePing(ix.guild, { roleId: null }), '');
+    assert.strictEqual(await idp.groupRolePing(ix.guild, null), '');
+  });
+
+  // The ADD-match select must create the match and open the map/time editor.
+  await t('idp:ematch ADD creates a match and shows the editor', async () => {
+    state.matches = [];
+    state.groups = [
+      { id: 'g1', tournamentId: 'e1', groupNo: 1, channelId: 'c1', roleId: 'role9', panelMsgId: 'm1', locked: true, tournament: { name: 'T', type: 'TOURNAMENT' } },
+    ];
+    // getGroup include path: findUnique on idpGroup must carry matches + tournament
+    const ix = mockIx2('select', 'idp:ematch:g1', ['ADD']);
+    await idp.handle(ix);
+    assert(ix._edit, 'expected editReply');
+    assert(state.matches.length === 1, 'one match should be created');
+    assert.strictEqual(state.matches[0].matchNo, 1, 'first match is #1');
+    const comps = ix._edit.components || [];
+    const mapSel = comps[0]?.components?.[0];
+    assert(mapSel && String(mapSel.data.custom_id).startsWith('idp:emap:'), 'map picker shown');
+    const timesBtn = comps[1]?.components?.[0];
+    assert(timesBtn && String(timesBtn.data.custom_id).startsWith('idp:etimes:'), 'times button shown');
+  });
+
+  await t('idp:ematch ADD numbers the next match after existing ones', async () => {
+    state.matches = [{ id: 'm1', idpGroupId: 'g1', matchNo: 1, map: null }, { id: 'm2', idpGroupId: 'g1', matchNo: 2, map: 'Erangel' }];
+    const ix = mockIx2('select', 'idp:ematch:g1', ['ADD']);
+    await idp.handle(ix);
+    assert(state.matches.length === 3, 'second ADD creates another match');
+    assert.strictEqual(state.matches[2].matchNo, 3, 'match numbered 3');
+  });
+
+  // Slot list posts must ping the group's role.
+  await t('slotlist send pings the group role', async () => {
+    const sent = [];
+    state.groups = [
+      { id: 'g1', tournamentId: 'e1', groupNo: 1, channelId: 'c1', roleId: 'role9', panelMsgId: 'm1', locked: true, tournament: { name: 'T', type: 'TOURNAMENT' } },
+    ];
+    const ix = mockIx2('button', 'idp:slotlist:g1', [], {
+      ix: { client: { channels: { fetch: async (id) => ({ id, isTextBased: () => true, send: async (pl) => { sent.push(pl); return { id: 'x' }; } }) } } },
+    });
+    await idp.handle(ix);
+    assert(sent.length === 1, 'slot list should be sent');
+    assert(sent[0].content && sent[0].content.includes('<@&role9>'), `role ping expected, got: ${JSON.stringify(sent[0].content)}`);
+    assert(ix._edit.content.includes('Slot list posted'), 'admin confirmation shown');
+  });
+
+
+
+
+  console.log(`\n${passed} panelplus+idpping tests passed${process.exitCode ? ' (with failures)' : ''}`);
 })().catch((e) => { console.error('HARNESS FAILED:', e); process.exit(1); });
