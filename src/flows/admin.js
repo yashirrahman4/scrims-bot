@@ -24,7 +24,7 @@ const {
   postAdminLog,
 } = require('../utils');
 const { postRegistrationAnnouncement } = require('./events');
-const { createIdpGroups } = require('./idp');
+const { createIdpGroups, refreshPanel } = require('./idp');
 
 /** audit() + mirror to the Admin Activity log channel (never throws). */
 async function adminAudit(interaction, action, details) {
@@ -79,7 +79,7 @@ function setupGate(event) {
 
 function eventDetailEmbed(event, taken) {
   const statusColor = { DRAFT: 0x95a5a6, OPEN: 0x57f287, LOCKED: 0xf1c40f, LIVE: 0x5865f2, COMPLETED: 0x2c2f33, CANCELLED: 0xed4245 };
-  return new EmbedBuilder()
+  const embed = new EmbedBuilder()
     .setColor(statusColor[event.status] ?? 0x95a5a6)
     .setTitle(`${event.type === 'SCRIM' ? '🎯' : '🏆'} ${event.name}`)
     .setDescription(event.description || '—')
@@ -88,8 +88,38 @@ function eventDetailEmbed(event, taken) {
       { name: 'Date', value: formatIST(event.date), inline: true },
       { name: 'Tags Required', value: String(event.tagsRequired ?? 4), inline: true },
       { name: 'Teams/Group', value: event.teamsPerGroup ? String(event.teamsPerGroup) : '—', inline: true },
-      { name: 'Slots', value: `${taken}/${event.teamLimit}`, inline: true }
+      { name: 'Slots', value: `${taken}/${event.teamLimit}`, inline: true },
+      { name: '🖼️ Poster', value: event.posterUrl ? '✅ Set' : '— not set —', inline: true }
     );
+  if (event.posterUrl) embed.setThumbnail(event.posterUrl);
+  return embed;
+}
+
+/** Validate a poster image URL. Returns null when OK, otherwise a human-readable error. */
+async function validatePosterUrl(raw) {
+  const url = (raw || '').trim();
+  let u;
+  try {
+    u = new URL(url);
+  } catch {
+    return 'That is not a valid URL. Paste a direct image link (https://…).';
+  }
+  if (u.protocol !== 'https:') return 'The poster URL must start with https://';
+  if (url.length > 500) return 'That URL is too long.';
+  // Light content check so broken images never reach the panel.
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 6000);
+    const res = await fetch(url, { method: 'HEAD', signal: ctrl.signal, redirect: 'follow' });
+    clearTimeout(timer);
+    const ct = res.headers.get('content-type') || '';
+    if (res.ok && ct.startsWith('image/')) return null;
+    if (res.ok) return 'That URL does not point to an image. Use a direct image link — a Discord attachment link works best.';
+  } catch {
+    // HEAD blocked/failed — fall back to extension sniffing.
+  }
+  if (/\.(png|jpe?g|webp|gif)(\?|#|$)/i.test(u.pathname)) return null;
+  return 'Could not verify that URL as an image. Send the poster in a Discord channel, copy its link, and paste it here.';
 }
 
 function eventActionRows(event) {
@@ -105,6 +135,7 @@ function eventActionRows(event) {
   const row2 = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(`admin:regs:view:${event.id}`).setLabel('View Registrations').setStyle(ButtonStyle.Primary).setEmoji('📝'),
     new ButtonBuilder().setCustomId(`admin:regmgr:${event.id}`).setLabel('Manage Registration').setStyle(ButtonStyle.Secondary).setEmoji('⚙️'),
+    new ButtonBuilder().setCustomId(`admin:poster:${event.id}`).setLabel('Set Poster').setStyle(ButtonStyle.Secondary).setEmoji('🖼️'),
     new ButtonBuilder().setCustomId(`admin:event:delete:${event.id}`).setLabel('Delete').setStyle(ButtonStyle.Danger).setEmoji('🗑️')
   );
   return row1.components.length ? [row1, row2] : [row2];
@@ -183,7 +214,7 @@ function regManagerRows(event, idpState) {
     new ButtonBuilder().setCustomId(`admin:reg:postpanel:${event.id}`).setLabel('Post Panel').setStyle(ButtonStyle.Secondary).setEmoji('📣'),
     eb('tpg', 'Teams/Group', '👥'),
     idpState === 'done'
-      ? new ButtonBuilder().setCustomId('admin:idp:done').setLabel('IDP Groups Ready').setStyle(ButtonStyle.Secondary).setEmoji('🗂️').setDisabled(true)
+      ? new ButtonBuilder().setCustomId(`admin:idp:repost:${event.id}`).setLabel('Repost IDP Panels').setStyle(ButtonStyle.Secondary).setEmoji('🔄')
       : new ButtonBuilder()
           .setCustomId(`admin:idp:ask:${event.id}`)
           .setLabel(idpState === 'partial' ? 'Resume IDP Groups' : 'Create IDP Groups')
@@ -196,12 +227,14 @@ function regManagerRows(event, idpState) {
       .setCustomId(`admin:regmgr:regch:${event.id}`)
       .setPlaceholder('Select new Registration Channel')
       .addChannelTypes(ChannelType.GuildText)
+      .setDefaultChannels(...[event.regChannelId].filter(Boolean))
   );
   const row4 = new ActionRowBuilder().addComponents(
     new ChannelSelectMenuBuilder()
       .setCustomId(`admin:regmgr:logch:${event.id}`)
       .setPlaceholder('Select new Log Channel')
       .addChannelTypes(ChannelType.GuildText)
+      .setDefaultChannels(...[event.logChannelId].filter(Boolean))
   );
   // One row for both roles (Discord allows max 5 rows per message): the 1st pick
   // is the Success Role, an optional 2nd pick is the Ping Role.
@@ -310,7 +343,8 @@ async function runIdpCreation(interaction, eventId, namePattern) {
       content:
         `✅ Created **${summary.groups}** IDP groups in category **${summary.categoryName}**.\n` +
         `Naming: **${summary.pattern}** → channels + roles created, roles given to each group's teams, panels posted.` +
-        (summary.failures.length ? `\n⚠️ ${summary.failures.length} group(s) failed — press Create IDP Groups again to retry.` : ''),
+        (summary.failures.length ? `\n⚠️ ${summary.failures.length} group(s) failed — press Create IDP Groups again to retry.` : '') +
+        (summary.panelFailures?.length ? `\n⚠️ Panels missing for: ${summary.panelFailures.join(', ')} — press **Repost IDP Panels** to retry.` : ''),
       embeds: [],
       components: [],
     });
@@ -764,6 +798,24 @@ async function handleButton(interaction) {
   }
 
   // ----- IDP group creation (confirmation -> create in a fresh "<name> — Round 1" category) -----
+  if (id.startsWith('admin:poster:')) {
+    const eventId = id.split(':')[2];
+    const modal = new ModalBuilder().setCustomId(`admin:poster:modal:${eventId}`).setTitle('Set Tournament Poster');
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('p_url')
+          .setLabel('Poster image URL (https)')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(500)
+          .setPlaceholder('Send the poster in Discord, copy its link, paste here')
+      )
+    );
+    // showModal must NOT be preceded by defer — Discord forbids defer-then-modal.
+    return interaction.showModal(modal);
+  }
+
   if (id.startsWith('admin:idp:ask:')) {
     const eventId = id.split(':')[3];
     await interaction.deferUpdate();
@@ -805,6 +857,31 @@ async function handleButton(interaction) {
 
   if (id.startsWith('admin:idp:no:')) {
     return showRegManager(interaction, id.split(':')[3], true);
+  }
+
+  // Re-ensure every IDP group channel has its schedule panel (sends the missing ones).
+  if (id.startsWith('admin:idp:repost:')) {
+    const eventId = id.split(':')[3];
+    await interaction.deferUpdate();
+    const groups = await prisma.idpGroup.findMany({ where: { tournamentId: eventId }, orderBy: { groupNo: 'asc' } });
+    if (!groups.length) return interaction.editReply({ content: 'No IDP groups exist for this event yet.', embeds: [], components: [] });
+    let okCount = 0;
+    const stillMissing = [];
+    for (const g of groups) {
+      await refreshPanel(interaction.client, g.id);
+      const fresh = await prisma.idpGroup.findUnique({ where: { id: g.id }, select: { panelMsgId: true } });
+      if (fresh?.panelMsgId) okCount++;
+      else stillMissing.push(g.groupNo);
+    }
+    await adminAudit(interaction, 'IDP_PANELS_REPOST', `${eventId}: panels ensured for ${okCount}/${groups.length} groups`);
+    await interaction.editReply({
+      content:
+        `🔄 IDP panels ensured for **${okCount}/${groups.length}** groups.` +
+        (stillMissing.length ? `\n⚠️ Still missing for group(s): ${stillMissing.join(', ')} — the bot may lack permission to send in those channels.` : ''),
+      embeds: [],
+      components: [],
+    });
+    return showRegManager(interaction, eventId, true);
   }
 
   if (id.startsWith('admin:idp:yes:')) {
@@ -1226,6 +1303,26 @@ async function handleModal(interaction) {
     return runIdpCreation(interaction, eventId, pattern);
   }
 
+  if (id.startsWith('admin:poster:modal:')) {
+    const eventId = id.split(':')[3];
+    await interaction.deferReply({ ephemeral: true });
+    const raw = interaction.fields.getTextInputValue('p_url');
+    const problem = await validatePosterUrl(raw);
+    if (problem) return interaction.editReply({ embeds: [errorEmbed(problem)] });
+    const url = raw.trim();
+    await prisma.tournament.update({ where: { id: eventId }, data: { posterUrl: url } });
+    const event = await prisma.tournament.findUnique({ where: { id: eventId } });
+    await adminAudit(interaction, 'POSTER_SET', `${event?.name || eventId}: poster set`);
+    // Refresh the public panel right away so the poster shows immediately.
+    try {
+      await require('./events').refreshAnnouncementPanel(interaction.client, interaction.guildId, eventId);
+    } catch {}
+    return interaction.editReply({
+      content: null,
+      embeds: [new EmbedBuilder().setColor(0x57f287).setTitle('🖼️ Poster saved').setDescription('The poster will appear on the tournament panel (already refreshed if posted).').setThumbnail(url)],
+    });
+  }
+
   if (id.startsWith('admin:regedit:submit:')) {
     const [, , , field, eventId] = id.split(':');
     await interaction.deferReply({ ephemeral: true });
@@ -1524,7 +1621,7 @@ async function handleModal(interaction) {
   }
 }
 
-module.exports = { handle, handleDmOptOut, stashCreation, setupGate, regManagerRows, regManagerEmbed };
+module.exports = { handle, handleDmOptOut, stashCreation, setupGate, regManagerRows, regManagerEmbed, validatePosterUrl, eventActionRows, eventDetailEmbed };
 
 /**
  * Broadcast opt-out, tapped by the DM recipient (NOT an admin) inside their own

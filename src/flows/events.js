@@ -132,6 +132,38 @@ async function dmSuccessMessage(interaction, event) {
   }
 }
 
+/** Rich registration log embed with full team + registerer details. */
+function registrationLogEmbed(team, event, reg, ownerDiscordId) {
+  const owner = team.owner || {};
+  const roster = (team.members || [])
+    .slice(0, 10)
+    .map((m) => `• ${m.player?.ign || '—'} — \`${m.player?.gameUid || '—'}\`${m.player?.discordId ? ` <@${m.player.discordId}>` : ''}`)
+    .join('\n');
+  return new EmbedBuilder()
+    .setColor(0x57f287)
+    .setTitle('✅ New Registration')
+    .setDescription(`**[${team.tag}] ${team.name}** registered for **${event.name}**`)
+    .addFields(
+      { name: '🆔 Team ID', value: `\`${team.teamId || '—'}\``, inline: true },
+      { name: '🎰 Slot', value: `Group ${reg.groupNo} · Slot ${reg.slotNo}`, inline: true },
+      { name: '👤 Registered by', value: `<@${ownerDiscordId}>${owner.username ? ` (${owner.username})` : ''}`, inline: true },
+      {
+        name: '👑 Owner',
+        value: owner.discordId ? `<@${owner.discordId}>${owner.username ? ` (${owner.username})` : ''}` : '—',
+        inline: true,
+      },
+      {
+        name: `👥 Roster (${(team.members || []).length})`,
+        value: roster || '—',
+        inline: false,
+      },
+      ...(reg.taggedDiscordIds?.length
+        ? [{ name: '🏷️ Tagged', value: reg.taggedDiscordIds.map((id) => `<@${id}>`).join(' '), inline: false }]
+        : [])
+    )
+    .setTimestamp();
+}
+
 /** Success-role grant + log-channel post after a registration. Never throws. */
 async function applyRegistrationExtras(interaction, event, team, reg) {
   const guild = interaction.guild;
@@ -163,17 +195,7 @@ async function applyRegistrationExtras(interaction, event, team, reg) {
     try {
       const ch = await guild.channels.fetch(event.logChannelId).catch(() => null);
       if (ch && ch.isTextBased()) {
-        await ch.send({
-          embeds: [
-            new EmbedBuilder()
-              .setColor(0x57f287)
-              .setTitle('✅ New Registration')
-              .setDescription(
-                `**[${team.tag}] ${team.name}** registered for **${event.name}**\nGroup ${reg.groupNo} · Slot ${reg.slotNo} · <@${interaction.user.id}>` +
-                  (reg.taggedDiscordIds?.length ? `\n🏷️ Tagged: ${reg.taggedDiscordIds.map((id) => `<@${id}>`).join(' ')}` : '')
-              ),
-          ],
-        });
+        await ch.send({ embeds: [registrationLogEmbed(team, event, reg, interaction.user.id)] });
       }
     } catch (e) {
       console.error('[events] registration log failed:', e.message);
@@ -186,13 +208,7 @@ async function applyRegistrationExtras(interaction, event, team, reg) {
       interaction.client,
       interaction.guildId,
       channelId,
-      new EmbedBuilder()
-        .setColor(0x57f287)
-        .setTitle('✅ New Registration')
-        .setDescription(
-          `**[${team.tag}] ${team.name}** registered for **${event.name}**\nGroup ${reg.groupNo} · Slot ${reg.slotNo} · <@${interaction.user.id}>` +
-            (reg.taggedDiscordIds?.length ? `\n🏷️ Tagged: ${reg.taggedDiscordIds.map((id) => `<@${id}>`).join(' ')}` : '')
-        )
+      registrationLogEmbed(team, event, reg, interaction.user.id)
     );
   }
 }
@@ -309,6 +325,7 @@ function registrationPostPayload(event, taken) {
     )
     .setFooter({ text: `${event.name} • Slots are first come, first served` })
     .setTimestamp();
+  if (event.posterUrl) embed.setImage(event.posterUrl);
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId(`event:registerpost:${event.id}`)
@@ -574,4 +591,4 @@ async function handleSelect(interaction) {
   }
 }
 
-module.exports = { handle, postRegistrationAnnouncement, refreshAnnouncementPanel, registrationPostPayload, slotsTaken, createRegistrationWithSlot, checkEligibility };
+module.exports = { handle, postRegistrationAnnouncement, refreshAnnouncementPanel, registrationPostPayload, slotsTaken, createRegistrationWithSlot, checkEligibility, registrationLogEmbed };

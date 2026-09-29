@@ -259,6 +259,7 @@ async function createIdpGroups(client, guild, eventId, guildId, namePattern) {
   }
   let created = 0;
   const failures = [];
+  const panelFailures = [];
   // Self-heal: groups created earlier whose panel post failed get their panel now.
   const paneless = await prisma.idpGroup.findMany({ where: { tournamentId: event.id, panelMsgId: null } });
   for (const g of paneless) {
@@ -301,9 +302,15 @@ async function createIdpGroups(client, guild, eventId, guildId, namePattern) {
       // Hand the group role to the teams already slotted in this group.
       const memberIds = await groupMemberDiscordIds({ ...grp, tournamentId: event.id, groupNo: g });
       const assigned = await assignRoleToIds(guild, grp.roleId, memberIds);
-      const full = await getGroup(grp.id);
-      const msg = await ch.send(idpPanelPayload(full));
-      await prisma.idpGroup.update({ where: { id: grp.id }, data: { panelMsgId: msg.id } });
+      // The schedule panel post is isolated — a panel failure must never fail the group itself.
+      try {
+        const full = await getGroup(grp.id);
+        const msg = await ch.send(idpPanelPayload(full));
+        await prisma.idpGroup.update({ where: { id: grp.id }, data: { panelMsgId: msg.id } });
+      } catch (e) {
+        console.error(`[idp] panel post failed for ${displayName}:`, e.message);
+        panelFailures.push(displayName);
+      }
       created++;
       console.log(`[idp] created ${displayName} (${assigned} members given the role)`);
       await new Promise((r) => setTimeout(r, 400)); // ease off channel-creation rate limits
@@ -312,7 +319,7 @@ async function createIdpGroups(client, guild, eventId, guildId, namePattern) {
       failures.push(g);
     }
   }
-  return { eventName: event.name, categoryName: category.name, pattern, groups: created, failures, resumed: have.size > 0 };
+  return { eventName: event.name, categoryName: category.name, pattern, groups: created, failures, panelFailures, resumed: have.size > 0 };
 }
 
 // ---------- buttons ----------
@@ -707,4 +714,4 @@ async function handleModal(interaction) {
   }
 }
 
-module.exports = { handle, createIdpGroups, groupCount, idpPanelPayload, groupLabel, parseNamePattern, groupDisplayName, groupChannelName, assignRoleToIds, MAPS };
+module.exports = { handle, createIdpGroups, groupCount, idpPanelPayload, groupLabel, parseNamePattern, groupDisplayName, groupChannelName, assignRoleToIds, refreshPanel, MAPS };
