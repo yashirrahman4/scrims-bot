@@ -1,3 +1,6 @@
 node_modules/
 .env
 *.log
+
+# stray OCR traineddata copies at repo root (the bundled copy lives in assets/)
+/eng.traineddata
