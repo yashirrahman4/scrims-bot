@@ -5,8 +5,32 @@ const idpFlows = require('./flows/idp');
 const slotFlows = require('./flows/slotmanager');
 const exportFlows = require('./flows/export');
 const panels = require('./panels');
+const scrimsFlows = require('./flows/scrims');
+const scrimGroups = require('./flows/scrimgroups');
+const scrimIdp = require('./flows/scrimidp');
+const scrimAdmin = require('./flows/scrimadmin');
+const scrimPanels = require('./scrimpanels');
+const cmdsG = require('./scrimcmds/cmds-g');
 const { prisma } = require('./db');
 const { requireAdmin, errorEmbed, audit } = require('./utils');
+
+/** /ss_idp manual — staff posts room credentials without OCR. */
+async function handleSsIdpManual(interaction) {
+  const track = interaction.options.getString('track', true);
+  const groupNo = interaction.options.getInteger('group_no', true);
+  const roomId = interaction.options.getString('room_id', true);
+  const password = interaction.options.getString('password', true);
+  const lobbyTime = interaction.options.getString('lobby_time') || '';
+  const group = await prisma.scrimGroup.findFirst({
+    where: { groupType: track, groupNo, status: { not: 'DELETED' } },
+  });
+  if (!group) {
+    return interaction.editReply({ embeds: [errorEmbed(`No active ${track} group ${groupNo} found.`)] });
+  }
+  await scrimIdp.postRoomIdp(group.id, { roomId, password, lobbyTime }, interaction.client);
+  await audit('SCRIM_SSIDP_MANUAL', interaction.user.id, `${track} G${groupNo} room posted manually`);
+  return interaction.editReply({ content: `✅ Room ID/password posted to ${track} Group ${groupNo}.` });
+}
 
 async function handleInteraction(interaction) {
   try {
@@ -42,7 +66,16 @@ async function handleInteraction(interaction) {
           scrim: panels.scrimRegistrationPanel,
           tournament: panels.tournamentRegistrationPanel,
           admin: panels.adminPanel,
+          br_verify: scrimPanels.brVerifyPanel,
+          br_oq: scrimPanels.brOqPanel,
+          br_t3: scrimPanels.brT3Panel,
+          br_admin: scrimPanels.brAdminPanel,
         };
+        if (which === 'br_lobby') {
+          await scrimAdmin.postLobbyPanel(interaction, 'ALL');
+          await audit('PANEL_POST', interaction.user.id, `br_lobby panel posted in #${interaction.channel.name}`);
+          return interaction.editReply({ content: `✅ Lobby panel posted in this channel.` });
+        }
         const build = builders[which];
         if (!build) return interaction.editReply({ embeds: [errorEmbed('Unknown panel.')] });
         if (!interaction.channel || !interaction.channel.isTextBased()) {
@@ -58,7 +91,22 @@ async function handleInteraction(interaction) {
         const sub = interaction.options.getSubcommand();
         if (sub === 'verified') return exportFlows.exportVerified(interaction);
         if (sub === 'tournament') return exportFlows.exportTournament(interaction, interaction.options.getString('name', true));
+        if (sub === 'scrim') return scrimAdmin.handle(interaction);
         return interaction.editReply({ embeds: [errorEmbed('Unknown export.')] });
+      }
+      if (interaction.commandName === 'create_group' || interaction.commandName === 'create_group_t3') {
+        await interaction.deferReply({ ephemeral: true });
+        if (await cmdsG.handleSlashCommand(interaction)) return;
+        return interaction.editReply({ embeds: [errorEmbed('Unknown command.')] });
+      }
+      if (interaction.commandName === 'message_template' || interaction.commandName === 'bot_health') {
+        await interaction.deferReply({ ephemeral: true });
+        return scrimAdmin.handle(interaction);
+      }
+      if (interaction.commandName === 'ss_idp') {
+        await interaction.deferReply({ ephemeral: true });
+        if (!(await requireAdmin(interaction))) return;
+        return handleSsIdpManual(interaction);
       }
       return;
     }
@@ -70,6 +118,12 @@ async function handleInteraction(interaction) {
     if (id.startsWith('idp:')) return idpFlows.handle(interaction);
     if (id.startsWith('slot:')) return slotFlows.handle(interaction);
     if (id.startsWith('dm:')) return adminFlows.handleDmOptOut(interaction);
+    // Black Raven scrims port (bs: namespace) — most specific first, then the
+    // verification/registration catch-all.
+    if (id.startsWith('bs:ssidp:')) return scrimIdp.handle(interaction);
+    if (/^bs:(panel|warn|remove|qualify|team):/.test(id)) return scrimGroups.handle(interaction);
+    if (/^bs:(admin|tpl|lobby):/.test(id)) return scrimAdmin.handle(interaction);
+    if (id.startsWith('bs:')) return scrimsFlows.handle(interaction);
   } catch (err) {
     console.error('[router] error:', err);
     try {

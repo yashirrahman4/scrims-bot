@@ -33,6 +33,31 @@ region, slot availability) → confirm → `PENDING` registration. View / cancel
 
 Deliberately **no payments and no ban/kick features**.
 
+## Black Raven scrims port (`2026-09-30.scrimport-1`)
+
+The full Black Raven scrims lifecycle is ported alongside the existing tournament structure
+(which is untouched): two tracks (OQ + T3) with identical mechanics.
+
+**Flow** — scrims verification (auto-approved, one profile reused for OQ + T3) → OQ/T3 registration
+(group pick + confirm, lowest free slot 5–25, closes 15 min before Match 1 IDP) → `/create_group`
+(auto-numbered, private channel + role, 21 slots 5–25, 2 matches at IDP + 6 min) → group management
+panel (match reminder, publish slots, warn / remove / qualify team) → SS-IDP (screenshot → Tesseract
+OCR extracts room ID/password; `/ss_idp manual` fallback) → timed reminders (IDP −30/−5 min, match-day
+ping, slot list auto-posted 15 min before Match 1, result-screenshot reminder) → qualification
+(qualified role, group close) → slot-waste enforcement (cumulative warnings → auto temp-ban) →
+cleanup (channel + role deleted 3 h after results).
+
+**Panels** (via `/setup-panel`): `BR Scrims Verification` (`br_verify`), `BR OQ Registration`
+(`br_oq`), `BR T3 Registration` (`br_t3`), `BR Scrims Admin` (`br_admin`), `BR Live Lobby` (`br_lobby`).
+
+**Extra tools**: `/message_template` (runtime message templates), `/bot_health` (self-diagnostics),
+`/export scrim` (Excel export), scrims ban/unban/list, scrim-only team deletion with JSON backup +
+restore, live lobby occupancy panels, automatic vacancy DM to subscribed teams when a slot frees.
+
+**Fixed vs the source**: DB-backed form sessions (no in-memory loss), consistent IST parsing,
+no hardcoded channel/role IDs (all env/config), SS-IDP pings the group's own role, slots validated
+5–25, modular handlers (no monolithic router), graceful OCR fallback.
+
 ## Requirements
 
 - Node.js 20+, PostgreSQL 14+

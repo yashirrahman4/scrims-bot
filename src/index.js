@@ -6,9 +6,13 @@ http.createServer((req, res) => { res.writeHead(200, { 'Content-Type': 'text/pla
 const config = require('./config');
 const { prisma } = require('./db');
 const { handleInteraction } = require('./router');
+// Black Raven scrims port
+const scrimIdp = require('./flows/scrimidp');
+const scrimGroups = require('./flows/scrimgroups');
+const scrimAdmin = require('./flows/scrimadmin');
 
 // Build tag — bump when shipping a fix so the console shows which code is live.
-const BUILD = '2026-09-29.slotmerge-1';
+const BUILD = '2026-09-30.scrimport-1';
 console.log(`🤖 scrims-bot ${BUILD} starting...`);
 
 if (!config.token) {
@@ -26,6 +30,8 @@ const client = new Client({
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.DirectMessages,
+    // Needed for the BR scrims SS-IDP screenshot intake.
+    GatewayIntentBits.MessageContent,
   ],
   partials: [Partials.Channel],
 });
@@ -35,10 +41,20 @@ client.once(Events.ClientReady, (c) => {
   // One-time sweep: replace legacy two-panel slot-manager messages with the single panel.
   const { reconcileLegacySlotPanels } = require('./flows/slotmanager');
   reconcileLegacySlotPanels(c).catch((e) => console.error('[slotmanager] startup sweep failed:', e.message));
+  // Black Raven scrims port: seed templates + start schedulers.
+  scrimAdmin.ensureDefaultTemplates().catch((e) => console.error('[scrims] templates:', e.message));
+  try { scrimGroups.startCleanupScheduler(c); } catch (e) { console.error('[scrims] cleanup scheduler:', e.message); }
+  try { scrimIdp.startIdpScheduler(c); } catch (e) { console.error('[scrims] idp scheduler:', e.message); }
+  try { scrimAdmin.startLobbyScheduler(c); } catch (e) { console.error('[scrims] lobby scheduler:', e.message); }
 });
 
 client.on(Events.InteractionCreate, (interaction) => {
   handleInteraction(interaction).catch((err) => console.error('[interaction] unhandled:', err));
+});
+
+// Black Raven scrims port: screenshot intake for SS-IDP OCR.
+client.on(Events.MessageCreate, (message) => {
+  scrimIdp.handleIdpImageMessage(message, client).catch((err) => console.error('[scrimidp] image hook:', err.message));
 });
 
 process.on('unhandledRejection', (err) => console.error('[unhandledRejection]', err));
@@ -91,6 +107,15 @@ async function boot() {
     // Older DBs created "map" as NOT NULL — matches are designed to allow "not revealed yet".
     await prisma.$executeRawUnsafe(`ALTER TABLE "IdpMatch" ALTER COLUMN "map" DROP NOT NULL`);
     await prisma.$executeRawUnsafe(`CREATE UNIQUE INDEX IF NOT EXISTS "IdpMatch_idpGroupId_matchNo_key" ON "IdpMatch"("idpGroupId", "matchNo")`);
+    // Black Raven scrims port: new tables are purely additive; the bot ensures
+    // them on startup the same way (HeavenCloud has no shell for migrate deploy).
+    const { selfHealColumns, selfHealTables } = require('./scrimselfheal');
+    for (const [table, col, type] of selfHealColumns) {
+      await prisma.$executeRawUnsafe(`ALTER TABLE "${table}" ADD COLUMN IF NOT EXISTS "${col}" ${type}`);
+    }
+    for (const sql of selfHealTables) {
+      await prisma.$executeRawUnsafe(sql);
+    }
     console.log('✅ Database schema up to date');
     await prisma.$queryRaw`SELECT 1`;
     console.log('✅ Database connected');

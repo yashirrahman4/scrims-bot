@@ -197,3 +197,173 @@ model IdpMatch {
 
   @@unique([idpGroupId, matchNo])
 }
+
+// ============================================================================
+// scrimport-1 — Black Raven scrims port (2026-09-30). Purely additive.
+// teamId fields are plain Strings referencing Team.id — deliberately NO
+// Prisma relation to Team so the Team model stays untouched.
+// ============================================================================
+
+model ScrimsVerification {
+  id              String    @id @default(cuid())
+  ownerDiscordId  String    @unique
+  teamName        String
+  ownerFullName   String?
+  whatsappNumber  String?
+  ownerEmail      String?
+  city            String?
+  playersJson     String    // JSON: [{number, ign, uid, discordId?}]
+  messageId       String?
+  status          String    @default("verified") // auto-approved like source
+  verifiedAt      DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+}
+
+model ScrimFormSession {  // DB-backed multi-step form state (replaces in-memory Maps)
+  id            String   @id @default(cuid())
+  userDiscordId String
+  flowType      String   // e.g. "bs_verify", "bs_qualify"
+  payload       String   @default("{}") // JSON
+  expiresAt     DateTime
+  createdAt     DateTime @default(now())
+  @@index([userDiscordId, flowType])
+}
+
+model ScrimGroup {
+  id              String    @id @default(cuid())
+  groupNo         Int
+  groupType       String    // "OQ" | "T3"
+  matchDate       DateTime?
+  channelId       String    @unique
+  roleId          String?
+  categoryId      String?
+  panelMsgId      String?
+  createdBy       String
+  status          String    @default("OPEN") // OPEN | CLOSED | DELETED
+  isOpen          Boolean   @default(true)
+  resultPublishedAt DateTime?
+  cleanedAt       DateTime?
+  slotListAutoPublishedAt DateTime?
+  createdAt       DateTime  @default(now())
+  matches         ScrimMatch[]
+  slots           ScrimSlot[]
+  @@unique([groupType, groupNo])
+}
+
+model ScrimMatch {
+  id            String    @id @default(cuid())
+  groupId       String
+  group         ScrimGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  matchNo       Int
+  map           String?
+  idpAt         DateTime?
+  startAt       DateTime?
+  idpReminder30SentAt DateTime?
+  idpReminder5SentAt  DateTime?
+  createdAt     DateTime  @default(now())
+  @@unique([groupId, matchNo])
+}
+
+model ScrimSlot {
+  id        String  @id @default(cuid())
+  groupId   String
+  group     ScrimGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  slotNo    Int     // 5..25 (21 slots)
+  teamId    String? // target Team.id (plain string, NO Prisma relation — do not touch Team model)
+  status    String  @default("EMPTY") // EMPTY | FILLED | REMOVED
+  createdAt DateTime @default(now())
+  @@unique([groupId, slotNo])
+}
+
+model ScrimRegistration {
+  id               String   @id @default(cuid())
+  teamId           String   // target Team.id (plain string)
+  groupId          String
+  slotNo           Int
+  registrationType String   // "OQ" | "T3"
+  status           String   @default("ACTIVE") // ACTIVE | COMPLETED | CANCELLED | REMOVED
+  registeredBy     String   // discord id
+  createdAt        DateTime @default(now())
+  @@index([teamId, status])
+  @@index([groupId, status])
+}
+
+model ScrimsBan {
+  id         String    @id @default(cuid())
+  discordId  String
+  teamId     String?
+  reason     String?
+  expiresAt  DateTime?
+  bannedBy   String
+  active     Boolean   @default(true)
+  createdAt  DateTime  @default(now())
+  @@index([discordId, active])
+}
+
+model SlotWarningCount {
+  id        String   @id @default(cuid())
+  teamId    String   @unique
+  count     Int      @default(0)
+  updatedAt DateTime @updatedAt
+}
+
+model SlotWarningLog {
+  id             String   @id @default(cuid())
+  teamId         String
+  groupId        String?
+  slotNo         Int?
+  ownerDiscordId String?
+  staffId        String?
+  warningNo      Int
+  reason         String?
+  action         String?  // e.g. "WARNED", "AUTO_BANNED"
+  createdAt      DateTime @default(now())
+  @@index([teamId])
+}
+
+model SlotReminder {  // vacancy subscription: DM me when a slot frees in this group
+  id            String   @id @default(cuid())
+  userDiscordId String
+  groupId       String
+  notified      Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  @@unique([userDiscordId, groupId])
+}
+
+model ScrimConfirmationPost {
+  id        String   @id @default(cuid())
+  groupId   String
+  teamId    String
+  slotNo    Int
+  serial    Int
+  messageId String?
+  createdAt DateTime @default(now())
+  @@index([groupId])
+}
+
+model LiveLobbyPanel {
+  id        String   @id @default(cuid())
+  guildId   String
+  channelId String
+  messageId String?
+  panelType String   // "OQ" | "T3" | "ALL"
+  active    Boolean  @default(true)
+  createdBy String
+  createdAt DateTime @default(now())
+}
+
+model DeletedTeamBackup {  // JSON backup of a deleted scrims team, restorable
+  id             String   @id @default(cuid())
+  ownerDiscordId String
+  teamName       String
+  backupJson     String
+  restored       Boolean  @default(false)
+  createdAt      DateTime @default(now())
+}
+
+model MessageTemplate {  // runtime-editable message templates (/message_template)
+  name      String   @id
+  content   String
+  updatedAt DateTime @updatedAt
+}
