@@ -172,7 +172,7 @@ console.log('migration + schema:');
 console.log('wiring:');
 {
   const index = read('src/index.js');
-  ok('build tag bumped to scrimport-5', index.includes("2026-09-30.scrimport-5"));
+  ok('build tag bumped to scrimport-5', index.includes("2026-09-30.scrimport-6"));
   ok('boot warns when CLIENT_ID/GUILD_ID unset', /CLIENT_ID.*GUILD_ID.*not set/i.test(index));
   ok('boot self-registers commands', index.includes('applicationGuildCommands'));
 

@@ -12,7 +12,7 @@ const scrimGroups = require('./flows/scrimgroups');
 const scrimAdmin = require('./flows/scrimadmin');
 
 // Build tag — bump when shipping a fix so the console shows which code is live.
-const BUILD = '2026-09-30.scrimport-5';
+const BUILD = '2026-09-30.scrimport-6';
 console.log(`🤖 scrims-bot ${BUILD} starting...`);
 
 // Git auto-update diagnostic: the HeavenCloud egg runs `git pull` on restart.
@@ -62,10 +62,15 @@ client.once(Events.ClientReady, (c) => {
   try { scrimGroups.startCleanupScheduler(c); } catch (e) { console.error('[scrims] cleanup scheduler:', e.message); }
   try { scrimIdp.startIdpScheduler(c); } catch (e) { console.error('[scrims] idp scheduler:', e.message); }
   try { scrimAdmin.startLobbyScheduler(c); } catch (e) { console.error('[scrims] lobby scheduler:', e.message); }
+  // Liveness heartbeat + DB keepalive (diagnoses/heals "thinking forever").
+  try { require('./health').startHealthMonitor(); } catch (e) { console.error('[health] failed to start:', e.message); }
 });
 
 client.on(Events.InteractionCreate, (interaction) => {
-  handleInteraction(interaction).catch((err) => console.error('[interaction] unhandled:', err));
+  const { watchInteraction } = require('./health');
+  watchInteraction(interaction, handleInteraction(interaction)).catch((err) =>
+    console.error('[interaction] unhandled:', err)
+  );
 });
 
 // Black Raven scrims port: screenshot intake for SS-IDP OCR.
