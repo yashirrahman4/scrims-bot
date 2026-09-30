@@ -348,12 +348,21 @@ function scrimIdpPanel(group, matches, locked) {
     ? new ButtonBuilder().setCustomId(`bs:panel:unlock:${group.id}`).setLabel('Unlock Group').setStyle(ButtonStyle.Secondary).setEmoji('🔓')
     : new ButtonBuilder().setCustomId(`bs:panel:lock:${group.id}`).setLabel('Lock Group').setStyle(ButtonStyle.Secondary).setEmoji('🔒');
 
-  const row = new ActionRowBuilder().addComponents(
+  // Row 1: schedule controls. Row 2: staff management controls (merged — one
+  // panel per group, not two separate messages).
+  const row1 = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(`bs:panel:edit:${group.id}`).setLabel('Edit').setStyle(ButtonStyle.Primary).setEmoji('✏️'),
     lockBtn
   );
+  const row2 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`bs:panel:remind:${group.id}`).setLabel('Match Reminder').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(`bs:panel:publish:${group.id}`).setLabel('Publish Slots').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`bs:panel:warn:${group.id}`).setLabel('Warn Team').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`bs:panel:remove:${group.id}`).setLabel('Remove Team').setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId(`bs:panel:qualify:${group.id}`).setLabel('Qualify').setStyle(ButtonStyle.Success)
+  );
 
-  return { embeds: [embed], components: [row] };
+  return { embeds: [embed], components: [row1, row2] };
 }
 
 module.exports.scrimIdpPanel = scrimIdpPanel;

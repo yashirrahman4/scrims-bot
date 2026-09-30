@@ -37,7 +37,7 @@ const {
   getSettings,
 } = require('../utils');
 const tpl = require('../services/scrimmsgtemplate');
-const { groupPanel, teamSelfServicePanel, scrimIdpPanel, scrimIdpPanelTitle } = require('../scrimpanels');
+const { teamSelfServicePanel, scrimIdpPanel, scrimIdpPanelTitle } = require('../scrimpanels');
 
 // ---------- ScrimFormSession helpers (Agent V contract) ----------
 // scrims.js is owned by a parallel agent; use its helpers when present,
@@ -649,19 +649,14 @@ async function createScrimGroup(interaction, track, { date, map1, map2, idp1, id
       return ephemeralError(interaction, 'Could not create the group (Discord or database error). Nothing was left behind — please retry.');
     }
 
-    // Panels into the group channel — IDP schedule panel first (tournament-style
-    // detail display with Edit + Lock/Unlock), then management, then self-service.
+    // One merged panel per group: IDP schedule (Edit + Lock/Unlock) + staff
+    // management buttons, then the team self-service panel.
     try {
       const idpMatches = await prisma.scrimMatch
         .findMany({ where: { groupId: group.id }, orderBy: { matchNo: 'asc' } })
         .catch(() => []);
       // Channel starts locked (group role denies SendMessages + AttachFiles).
-      await channel.send(scrimIdpPanel(group, idpMatches, true));
-    } catch (e) {
-      console.error('[scrimgroups] idp panel post failed:', e.message);
-    }
-    try {
-      const msg = await channel.send(groupPanel(group));
+      const msg = await channel.send(scrimIdpPanel(group, idpMatches, true));
       const others = await prisma.scrimGroup.findMany({
         where: { groupType: track, status: 'OPEN', isOpen: true, id: { not: group.id } },
         orderBy: { groupNo: 'asc' },
@@ -1448,6 +1443,55 @@ function startCleanupScheduler(client) {
   return cleanupTimer;
 }
 
+/**
+ * Startup sweep: ensure each OPEN group has exactly one panel message — the
+ * merged IDP schedule + staff management panel. Groups made before the merge
+ * may still carry the legacy standalone `🛡️ GROUP <T>-<N>` management panel;
+ * post the merged panel if missing, then delete the legacy message(s).
+ */
+async function reconcileScrimPanels(client) {
+  try {
+    const groups = await prisma.scrimGroup.findMany({
+      where: { status: 'OPEN' },
+      orderBy: { createdAt: 'asc' },
+      take: 50,
+    });
+    for (const g of groups) {
+      try {
+        const ch = await client.channels.fetch(String(g.channelId)).catch(() => null);
+        if (!ch || !ch.isTextBased()) continue;
+        const recent = await ch.messages.fetch({ limit: 30 }).catch(() => null);
+        if (!recent) continue;
+        const botMsgs = [...recent.values()].filter((m) => m.author && client.user && m.author.id === client.user.id);
+        const titles = (m) => (m.embeds || []).map((e) => e.title || '').filter(Boolean);
+        const idpTitle = scrimIdpPanelTitle(g);
+        const legacyTitle = `🛡️ GROUP ${g.groupType}-${g.groupNo}`;
+        let hasIdp = botMsgs.some((m) => titles(m).some((t) => t.startsWith(idpTitle)));
+        const legacy = botMsgs.filter((m) => titles(m).some((t) => t.startsWith(legacyTitle)));
+        if (!hasIdp) {
+          const matches = await groupMatches(g.id);
+          const sent = await ch.send(scrimIdpPanel(g, matches, isGroupLocked(ch, g))).catch(() => null);
+          if (sent) {
+            hasIdp = true;
+            await prisma.scrimGroup.update({ where: { id: g.id }, data: { panelMsgId: sent.id } }).catch(() => {});
+            console.log(`[scrims] panel sweep: posted merged panel in ${g.groupType} G${g.groupNo}`);
+          }
+        }
+        // Only remove the legacy message once the merged panel is definitely there.
+        if (hasIdp && legacy.length) {
+          for (const m of legacy) await m.delete().catch(() => {});
+          console.log(`[scrims] panel sweep: removed ${legacy.length} legacy panel(s) from ${g.groupType} G${g.groupNo}`);
+        }
+      } catch (e) {
+        console.error('[scrims] panel sweep group failed:', e.message);
+      }
+      await new Promise((r) => setTimeout(r, 250));
+    }
+  } catch (e) {
+    console.error('[scrims] panel sweep failed:', e.message);
+  }
+}
+
 module.exports = {
   handle,
   createScrimGroup,
@@ -1457,5 +1501,6 @@ module.exports = {
   getSession,
   deleteSession,
   refreshScrimIdpPanel,
+  reconcileScrimPanels,
   _test: { slotRangeOk, startAtFromIdp, shouldEscalateToBan, isGroupLocked, scrimIdpPanelTitle: require('../scrimpanels').scrimIdpPanelTitle },
 };

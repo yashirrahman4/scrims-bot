@@ -61,6 +61,27 @@ function ok(name, cond) {
   ok('unlocked panel offers Lock Group', ubtns[1].data.custom_id === 'bs:panel:lock:gid1' && ubtns[1].data.label === 'Lock Group');
   ok('unlocked footer text', unlocked.embeds[0].data.footer.text.includes('🔓 Group unlocked'));
 
+  // --- merged single panel ---------------------------------------------------
+  ok('merged panel has exactly 2 rows (schedule controls + staff management)', locked.components.length === 2);
+  const mgmt = locked.components[1].components;
+  const mgmtIds = mgmt.map((b) => b.data.custom_id);
+  ok('merged row carries Match Reminder', mgmtIds[0] === 'bs:panel:remind:gid1' && mgmt[0].data.label === 'Match Reminder');
+  ok('merged row carries Publish Slots', mgmtIds[1] === 'bs:panel:publish:gid1');
+  ok('merged row carries Warn Team', mgmtIds[2] === 'bs:panel:warn:gid1');
+  ok('merged row carries Remove Team', mgmtIds[3] === 'bs:panel:remove:gid1');
+  ok('merged row carries Qualify', mgmtIds[4] === 'bs:panel:qualify:gid1');
+  ok('Remove Team is Danger, Qualify is Success', mgmt[3].data.style === 4 && mgmt[4].data.style === 3);
+
+  // --- reconcile sweep --------------------------------------------------------
+  const fs = require('fs');
+  const gsrcPanel = fs.readFileSync(__dirname + '/src/flows/scrimgroups.js', 'utf8');
+  ok('reconcileScrimPanels exported', typeof groups.reconcileScrimPanels === 'function');
+  ok('creation no longer posts legacy standalone groupPanel', !gsrcPanel.includes('channel.send(groupPanel('));
+  ok('sweep deletes legacy panels only after merged panel exists', gsrcPanel.includes('Only remove the legacy message once the merged panel is definitely there'));
+  ok('sweep detects legacy GROUP title', gsrcPanel.includes('🛡️ GROUP ${g.groupType}-${g.groupNo}'));
+  const isrc = fs.readFileSync(__dirname + '/src/index.js', 'utf8');
+  ok('startup calls reconcileScrimPanels', isrc.includes('reconcileScrimPanels(c)'));
+
   // --- isGroupLocked --------------------------------------------------------
   const { isGroupLocked } = groups._test;
   const ow = (allow, deny) => ({

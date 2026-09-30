@@ -57,6 +57,8 @@ client.once(Events.ClientReady, (c) => {
   // One-time sweep: replace legacy two-panel slot-manager messages with the single panel.
   const { reconcileLegacySlotPanels } = require('./flows/slotmanager');
   reconcileLegacySlotPanels(c).catch((e) => console.error('[slotmanager] startup sweep failed:', e.message));
+  // Scrims: one merged IDP + management panel per group (heals groups made before the merge).
+  scrimGroups.reconcileScrimPanels(c).catch((e) => console.error('[scrims] panel sweep failed:', e.message));
   // Black Raven scrims port: seed templates + start schedulers.
   scrimAdmin.ensureDefaultTemplates().catch((e) => console.error('[scrims] templates:', e.message));
   try { scrimGroups.startCleanupScheduler(c); } catch (e) { console.error('[scrims] cleanup scheduler:', e.message); }
