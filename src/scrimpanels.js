@@ -299,3 +299,62 @@ module.exports.brAdminPanel = brAdminPanel;
 module.exports.buildLobbyEmbed = buildLobbyEmbed;
 module.exports.FOOTER = FOOTER;
 module.exports._testA = { progressBar, fmtDateIST };
+
+// ---------------------------------------------------------------------------
+// Scrims IDP schedule panel — mirrors the tournament IDP panel's detail
+// display (Event / Matches Date / Total Slots / Total Matches / per-match
+// map + IDP AT + START AT), with Edit and Lock/Unlock staff buttons.
+// Posted in the group's private channel at creation; refreshed after edits.
+// ---------------------------------------------------------------------------
+
+/** Canonical title for a scrims IDP panel — also used to re-find it later. */
+function scrimIdpPanelTitle(group) {
+  return `🗂️ ${group.groupType} G${group.groupNo} · Match Schedule`;
+}
+
+function fmtIdpDateTime(dt) {
+  if (!dt) return 'TBD';
+  return formatIST(dt);
+}
+
+/**
+ * @param {object} group { id, groupNo, groupType, matchDate }
+ * @param {Array} matches [{ matchNo, map, idpAt, startAt }]
+ * @param {boolean} locked
+ */
+function scrimIdpPanel(group, matches, locked) {
+  const list = [...(matches || [])].sort((a, b) => a.matchNo - b.matchNo);
+  const dateStr = group.matchDate ? formatIST(group.matchDate).split(' ')[0] : 'TBD';
+  const embed = new EmbedBuilder()
+    .setColor(0x9b111e) // raven red (scrims brand); layout mirrors the tournament IDP panel
+    .setTitle(scrimIdpPanelTitle(group))
+    .setDescription(
+      `**🏆 Event:** Black Raven Scrims · ${group.groupType}\n` +
+        `**📅 Matches Date:** ${dateStr}\n` +
+        `**👥 Total Slots:** ${SLOT_TOTAL}\n` +
+        `**🎮 Total Matches:** ${list.length}\n\n` +
+        (list
+          .map(
+            (m) =>
+              `**Match ${m.matchNo}** — 🗺️ ${m.map || '_Not revealed yet_'}\n` +
+              `✨ IDP AT: \`${fmtIdpDateTime(m.idpAt)}\` · 🚀 START AT: \`${fmtIdpDateTime(m.startAt)}\``
+          )
+          .join('\n\n') || '_No matches scheduled yet — press Edit to fix this._')
+    )
+    .setFooter({ text: locked ? '🔒 Group locked — only staff can send messages' : '🔓 Group unlocked' })
+    .setTimestamp();
+
+  const lockBtn = locked
+    ? new ButtonBuilder().setCustomId(`bs:panel:unlock:${group.id}`).setLabel('Unlock Group').setStyle(ButtonStyle.Secondary).setEmoji('🔓')
+    : new ButtonBuilder().setCustomId(`bs:panel:lock:${group.id}`).setLabel('Lock Group').setStyle(ButtonStyle.Secondary).setEmoji('🔒');
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`bs:panel:edit:${group.id}`).setLabel('Edit').setStyle(ButtonStyle.Primary).setEmoji('✏️'),
+    lockBtn
+  );
+
+  return { embeds: [embed], components: [row] };
+}
+
+module.exports.scrimIdpPanel = scrimIdpPanel;
+module.exports.scrimIdpPanelTitle = scrimIdpPanelTitle;

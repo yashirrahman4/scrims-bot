@@ -294,6 +294,51 @@ async function loadVerification(userId) {
   return prisma.scrimsVerification.findUnique({ where: { ownerDiscordId: String(userId) } }).catch(() => null);
 }
 
+/**
+ * Scrims verification is satisfied by ANY of:
+ *  - a verified scrimsVerification row (the scrims verify panel), or
+ *  - the SCRIMS_VERIFIED_ROLE_ID role, or
+ *  - owning an ACTIVE team from the main team-verification system.
+ * This is what connects the team verification data to OQ/T3 registration:
+ * a team-verified owner never has to verify twice.
+ */
+function isVerifiedForScrims({ scrimsVerified, hasVerifiedRole, team }) {
+  if (scrimsVerified || hasVerifiedRole) return true;
+  return !!(team && team.status === 'ACTIVE');
+}
+
+/**
+ * Derive a scrims profile from the user's verified team (name + roster) when
+ * they don't have one yet. Keeps staff-facing screens that read
+ * scrimsVerification accurate without asking the user to type everything
+ * again. Never throws; returns the row or null.
+ */
+async function linkTeamVerification(discordId, guild) {
+  try {
+    const existing = await loadVerification(discordId);
+    if (existing) return existing;
+    const dbUser = await prisma.user.findUnique({ where: { discordId: String(discordId) } }).catch(() => null);
+    if (!dbUser) return null;
+    const team = await getOwnedTeam(dbUser.id).catch(() => null);
+    if (!team || team.status !== 'ACTIVE') return null;
+    const players = rosterFromTeam(team);
+    const row = await prisma.scrimsVerification.create({
+      data: {
+        ownerDiscordId: String(discordId),
+        teamName: team.name,
+        playersJson: JSON.stringify(players),
+        status: 'verified',
+        verifiedAt: new Date(),
+      },
+    }).catch(() => null);
+    if (row && guild) await grantRoleSilent(guild, String(discordId), process.env.SCRIMS_VERIFIED_ROLE_ID);
+    return row;
+  } catch (e) {
+    console.error('[scrims] linkTeamVerification failed:', e.message);
+    return null;
+  }
+}
+
 function parsePlayersJson(row) {
   try {
     const v = JSON.parse(row?.playersJson || '[]');
@@ -304,7 +349,10 @@ function parsePlayersJson(row) {
 }
 
 async function onVerify(interaction) {
-  const row = await loadVerification(interaction.user.id);
+  // Team-verification connection: an ACTIVE verified team counts — derive the
+  // scrims profile from it instead of making the owner verify twice.
+  const linked = await linkTeamVerification(interaction.user.id, interaction.guild);
+  const row = linked || (await loadVerification(interaction.user.id));
   if (row && row.status === 'verified') {
     const players = parsePlayersJson(row);
     await replyEph(interaction, {
@@ -603,17 +651,26 @@ async function onVerifyCancelNo(interaction) {
 async function guardCheck(interaction, track) {
   const userId = interaction.user.id;
 
-  // (a) verified row or verified role
-  let verified = false;
+  // (c) owns a team — checked first, because an ACTIVE verified team also
+  // satisfies the scrims-verification requirement (no double verification).
+  let team = null;
+  try {
+    const dbUser = await getOrCreateUser(interaction.user);
+    team = await getOwnedTeam(dbUser.id);
+  } catch {}
+  if (!team) {
+    return { problem: 'You need a registered team to join scrims. Register a team from the team panel first.' };
+  }
+
+  // (a) verified: scrims row, verified role, or ACTIVE team from team verification.
+  let scrimsVerified = false;
   try {
     const v = await prisma.scrimsVerification.findUnique({ where: { ownerDiscordId: String(userId) } });
-    verified = !!(v && v.status === 'verified');
+    scrimsVerified = !!(v && v.status === 'verified');
   } catch {}
-  if (!verified) {
-    const roleId = process.env.SCRIMS_VERIFIED_ROLE_ID;
-    if (roleId && interaction.member?.roles?.cache?.has(roleId)) verified = true;
-  }
-  if (!verified) {
+  const roleId = process.env.SCRIMS_VERIFIED_ROLE_ID;
+  const hasVerifiedRole = !!(roleId && interaction.member?.roles?.cache?.has(roleId));
+  if (!isVerifiedForScrims({ scrimsVerified, hasVerifiedRole, team })) {
     return { problem: 'Please complete **Scrims Verification** first — use the verification panel, then come back here.' };
   }
 
@@ -624,16 +681,6 @@ async function guardCheck(interaction, track) {
       return { problem: `You are banned from scrims${ban.reason ? `: ${ban.reason}` : '.'} Contact staff.` };
     }
   } catch {}
-
-  // (c) owns a team
-  let team = null;
-  try {
-    const dbUser = await getOrCreateUser(interaction.user);
-    team = await getOwnedTeam(dbUser.id);
-  } catch {}
-  if (!team) {
-    return { problem: 'You need a registered team to join scrims. Register a team from the team panel first.' };
-  }
 
   // (d) T3 role (only when configured)
   if (track === 'T3') {
@@ -797,7 +844,7 @@ async function onRegConfirm(interaction) {
       if (ban && (!ban.expiresAt || new Date(ban.expiresAt) > new Date())) throw new Error('BANNED');
 
       const v = await tx.scrimsVerification.findUnique({ where: { ownerDiscordId: String(userId) } });
-      if (!v || v.status !== 'verified') throw new Error('NOT_VERIFIED');
+      const scrimsVerified = !!(v && v.status === 'verified');
 
       const dbUser = await tx.user.findUnique({ where: { discordId: String(userId) } });
       const team = dbUser
@@ -806,6 +853,9 @@ async function onRegConfirm(interaction) {
           })
         : null;
       if (!team) throw new Error('NO_TEAM');
+      // Team-verification connection: an ACTIVE team from the main team
+      // verification satisfies the scrims-verification requirement.
+      if (!isVerifiedForScrims({ scrimsVerified, hasVerifiedRole: false, team })) throw new Error('NOT_VERIFIED');
 
       const track = group.groupType;
       const t3Role = process.env.SCRIMS_T3_ROLE_ID;
@@ -866,6 +916,10 @@ async function onRegConfirm(interaction) {
     userId,
     `${result.track} team=${result.team.name} group=${result.group.groupNo} slot=${result.slotNo}`
   );
+
+  // Connect the team-verification data: derive the scrims profile from the
+  // verified team when the owner registered via their team (no double entry).
+  await linkTeamVerification(userId, interaction.guild);
 
   // Numbered confirmation post (source parity): post to the track's
   // confirmation channel when configured, and record the messageId.
@@ -1003,5 +1057,5 @@ module.exports = {
   saveSession,
   getSession,
   deleteSession,
-  _test: { lowestFreeSlot, registrationOpen, rosterFromTeam },
+  _test: { lowestFreeSlot, registrationOpen, rosterFromTeam, isVerifiedForScrims, linkTeamVerification },
 };

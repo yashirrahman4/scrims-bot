@@ -2,7 +2,9 @@
  * Scrim group lifecycle — Agent G (scrimport-1).
  *
  * Handles: bs:panel:* (staff group panel), bs:warn:modal:* / bs:remove:modal:*
- * / bs:qualify:modal:* (modal submits), bs:team:* (team self-service).
+ * / bs:qualify:modal:* (modal submits), bs:team:* (team self-service),
+ * bs:panel:edit|lock|unlock (scrims IDP schedule panel) + edit sub-flow
+ * (bs:panel:ematch/emap/etimes/edate + modals).
  *
  * Exports:
  *   handle(interaction)                       -> true when handled
@@ -19,6 +21,7 @@ const {
   EmbedBuilder,
   ModalBuilder,
   PermissionFlagsBits,
+  StringSelectMenuBuilder,
   TextInputBuilder,
   TextInputStyle, MessageFlags} = require('discord.js');
 const { prisma } = require('../db');
@@ -34,7 +37,7 @@ const {
   getSettings,
 } = require('../utils');
 const tpl = require('../services/scrimmsgtemplate');
-const { groupPanel, teamSelfServicePanel } = require('../scrimpanels');
+const { groupPanel, teamSelfServicePanel, scrimIdpPanel, scrimIdpPanelTitle } = require('../scrimpanels');
 
 // ---------- ScrimFormSession helpers (Agent V contract) ----------
 // scrims.js is owned by a parallel agent; use its helpers when present,
@@ -231,10 +234,264 @@ async function renderSlotList(groupId) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Scrims IDP schedule panel — tournament-style detail display with Edit and
+// Lock/Unlock staff buttons. Lock state is derived live from the group role's
+// channel overwrite (no DB column), so it can never drift.
+// ---------------------------------------------------------------------------
+
+const SCRIM_MAPS = ['Erangel', 'Miramar', 'Rondo'];
+
+async function groupMatches(groupId) {
+  return prisma.scrimMatch
+    .findMany({ where: { groupId: String(groupId) }, orderBy: { matchNo: 'asc' } })
+    .catch(() => []);
+}
+
+async function groupTextChannel(client, group) {
+  if (!group || !group.channelId) return null;
+  const ch = await client.channels.fetch(String(group.channelId)).catch(() => null);
+  return ch && ch.isTextBased && ch.isTextBased() ? ch : null;
+}
+
+/** Locked unless the group role is explicitly allowed SendMessages+AttachFiles. Fail closed. */
+function isGroupLocked(channel, group) {
+  try {
+    if (!channel || !group || !group.roleId) return true;
+    const ow = channel.permissionOverwrites.cache.get(String(group.roleId));
+    if (!ow) return true;
+    return !(ow.allow.has(PermissionFlagsBits.SendMessages) && ow.allow.has(PermissionFlagsBits.AttachFiles));
+  } catch {
+    return true;
+  }
+}
+
+/** Re-render the scrims IDP panel message in the group's channel. Never throws. */
+async function refreshScrimIdpPanel(client, groupId) {
+  try {
+    const group = await getGroup(groupId);
+    if (!group) return false;
+    const matches = await groupMatches(group.id);
+    const ch = await groupTextChannel(client, group);
+    if (!ch) return false;
+    const payload = scrimIdpPanel(group, matches, isGroupLocked(ch, group));
+    const title = scrimIdpPanelTitle(group);
+    let mine = null;
+    try {
+      const recent = await ch.messages.fetch({ limit: 30 });
+      mine = [...recent.values()].find(
+        (m) => m.author && client.user && m.author.id === client.user.id &&
+          (m.embeds || []).some((e) => (e.title || '').startsWith(title))
+      ) || null;
+    } catch {}
+    if (mine) await mine.edit(payload).catch(() => null);
+    else await ch.send(payload).catch(() => null);
+    return true;
+  } catch (e) {
+    console.error('[scrimgroups] refreshScrimIdpPanel failed:', e.message);
+    return false;
+  }
+}
+
+/** Staff actions on the IDP panel: edit | lock | unlock. */
+async function idpPanelAction(interaction, action, groupId) {
+  if (!(await requireAdmin(interaction))) return;
+  const group = await getGroup(groupId);
+  if (!group) return ephemeralError(interaction, 'Group not found.');
+
+  if (action === 'edit') {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const matches = await groupMatches(group.id);
+    if (!matches.length) {
+      return interaction.editReply({ content: 'No matches on this group.', embeds: [], components: [] });
+    }
+    const select = new StringSelectMenuBuilder()
+      .setCustomId(`bs:panel:ematch:${group.id}`)
+      .setPlaceholder('Select a match to edit')
+      .addOptions(
+        matches.map((m) => ({
+          label: `Match ${m.matchNo} — ${m.map || 'Not revealed yet'}`.slice(0, 100),
+          value: m.id,
+          description: `IDP ${m.idpAt ? formatIST(m.idpAt) : 'TBD'} · Start ${m.startAt ? formatIST(m.startAt) : 'TBD'}`.slice(0, 100),
+        }))
+      );
+    const row2 = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`bs:panel:edate:${group.id}`).setLabel('Edit Matches Date').setStyle(ButtonStyle.Secondary).setEmoji('📅')
+    );
+    return interaction.editReply({
+      content: `Editing **${group.groupType} G${group.groupNo}** — pick a match:`,
+      components: [new ActionRowBuilder().addComponents(select), row2],
+    });
+  }
+
+  if (action === 'lock' || action === 'unlock') {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const ch = await groupTextChannel(interaction.client, group);
+    if (!ch || !group.roleId) {
+      return interaction.editReply({ content: 'Group channel or role not found.', embeds: [], components: [] });
+    }
+    const lock = action === 'lock';
+    try {
+      await ch.permissionOverwrites.edit(group.roleId, lock
+        ? { SendMessages: false, AttachFiles: false }
+        : { SendMessages: true, AttachFiles: true });
+    } catch (e) {
+      console.error('[scrimgroups] lock toggle failed:', e.message);
+      return interaction.editReply({ content: 'Could not update channel permissions.', embeds: [], components: [] });
+    }
+    await refreshScrimIdpPanel(interaction.client, group.id);
+    await audit('bs:panel:lock', interaction.user.id, `${group.groupType} G${group.groupNo} ${lock ? 'locked' : 'unlocked'}`);
+    return interaction.editReply({
+      embeds: [successEmbed(lock ? '🔒 Group locked — teams cannot send messages or files.' : '🔓 Group unlocked — teams can send messages and attach files.')],
+      components: [],
+    });
+  }
+
+  return ephemeralError(interaction, 'Unknown action.');
+}
+
+/** Match picker -> map select + times button (same message, ephemeral). */
+async function idpMatchSelect(interaction, groupId) {
+  if (!(await requireAdmin(interaction))) return;
+  const group = await getGroup(groupId);
+  if (!group) return ephemeralError(interaction, 'Group not found.');
+  await interaction.deferUpdate();
+  const matchId = interaction.values && interaction.values[0];
+  const match = await prisma.scrimMatch.findUnique({ where: { id: String(matchId) } }).catch(() => null);
+  if (!match || match.groupId !== String(groupId)) {
+    return interaction.editReply({ content: 'Match not found.', embeds: [], components: [] });
+  }
+  const mapSelect = new StringSelectMenuBuilder()
+    .setCustomId(`bs:panel:emap:${match.id}`)
+    .setPlaceholder(`Map: ${match.map || 'Not revealed yet'}`)
+    .addOptions([
+      { label: 'Not revealed yet', value: 'NONE', description: 'Hide the map for now', emoji: '🗺️' },
+      ...SCRIM_MAPS.map((mp) => ({ label: mp, value: mp, emoji: '🎮' })),
+    ]);
+  const row2 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`bs:panel:etimes:${match.id}`).setLabel('Edit IDP / Start Times').setStyle(ButtonStyle.Secondary).setEmoji('⏰')
+  );
+  return interaction.editReply({
+    content: `Editing **Match ${match.matchNo}** — pick the map, or edit times:`,
+    embeds: [],
+    components: [new ActionRowBuilder().addComponents(mapSelect), row2],
+  });
+}
+
+/** Map select -> save + refresh the IDP panel. */
+async function idpMapSelect(interaction, matchId) {
+  if (!(await requireAdmin(interaction))) return;
+  await interaction.deferUpdate();
+  const match = await prisma.scrimMatch.findUnique({ where: { id: String(matchId) } }).catch(() => null);
+  if (!match) return interaction.editReply({ content: 'Match not found.', embeds: [], components: [] });
+  const picked = interaction.values && interaction.values[0];
+  const map = picked && picked !== 'NONE' ? picked : null;
+  await prisma.scrimMatch.update({ where: { id: match.id }, data: { map } }).catch((e) =>
+    console.error('[scrimgroups] map update failed:', e.message));
+  await refreshScrimIdpPanel(interaction.client, match.groupId);
+  await audit('bs:panel:edit', interaction.user.id, `match ${match.id} map -> ${map || 'not revealed'}`);
+  return interaction.editReply({
+    content: `🗺️ Match **${match.matchNo}** map set to **${map || 'Not revealed yet'}** — panel refreshed.`,
+    embeds: [],
+    components: [],
+  });
+}
+
+/** Times button -> modal (no defer before showModal). */
+async function idpTimesButton(interaction, matchId) {
+  if (!(await requireAdmin(interaction))) return;
+  const match = await prisma.scrimMatch.findUnique({ where: { id: String(matchId) } }).catch(() => null);
+  if (!match) return interaction.reply({ embeds: [errorEmbed('Match not found.')], flags: MessageFlags.Ephemeral });
+  const hhmm = (d) => (d ? formatIST(d).slice(11, 16) : '');
+  const modal = new ModalBuilder().setCustomId(`bs:panel:ematch:modal:${match.id}`).setTitle(`Match ${match.matchNo} Times`);
+  const mk = (cid, label, value, ph) =>
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder().setCustomId(cid).setLabel(label).setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(16).setValue(value || '').setPlaceholder(ph)
+    );
+  modal.addComponents(
+    mk('m_idpat', 'IDP time — e.g. 13:40 (empty = clear)', hhmm(match.idpAt), '13:40'),
+    mk('m_startat', 'Start time — e.g. 13:55 (empty = clear)', hhmm(match.startAt), '13:55')
+  );
+  return interaction.showModal(modal);
+}
+
+/** Times modal submit -> parse against the group's match date, save, refresh. */
+async function idpTimesModal(interaction, matchId) {
+  if (!(await requireAdmin(interaction))) return;
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  const match = await prisma.scrimMatch.findUnique({ where: { id: String(matchId) } }).catch(() => null);
+  if (!match) return interaction.editReply({ embeds: [errorEmbed('Match not found.')] });
+  const group = await getGroup(match.groupId);
+  if (!group) return interaction.editReply({ embeds: [errorEmbed('Group not found.')] });
+  const dateStr = group.matchDate ? formatIST(group.matchDate).split(' ')[0] : '';
+  const idpRaw = (interaction.fields.getTextInputValue('m_idpat') || '').trim();
+  const startRaw = (interaction.fields.getTextInputValue('m_startat') || '').trim();
+  const parseOne = (raw, cur) => {
+    if (!raw) return { ok: true, value: null }; // empty = clear
+    if (!dateStr) return { ok: false };
+    const d = parseLenientDateTimeIST(dateStr, raw);
+    return d ? { ok: true, value: d } : { ok: false };
+  };
+  const idp = parseOne(idpRaw, match.idpAt);
+  const start = parseOne(startRaw, match.startAt);
+  if (!idp.ok || !start.ok) {
+    return interaction.editReply({
+      embeds: [errorEmbed(!dateStr
+        ? 'Set the matches date first (Edit → Edit Matches Date), then set times.'
+        : 'Invalid time. Use 24h HH:MM like 13:40.')],
+    });
+  }
+  await prisma.scrimMatch.update({ where: { id: match.id }, data: { idpAt: idp.value, startAt: start.value } })
+    .catch((e) => console.error('[scrimgroups] times update failed:', e.message));
+  await refreshScrimIdpPanel(interaction.client, group.id);
+  await audit('bs:panel:edit', interaction.user.id, `match ${match.id} times -> IDP ${idpRaw || 'cleared'}, start ${startRaw || 'cleared'}`);
+  return interaction.editReply({ embeds: [successEmbed(`Match ${match.matchNo} times updated — panel refreshed.`)] });
+}
+
+/** Matches-date button -> modal (no defer before showModal). */
+async function idpDateButton(interaction, groupId) {
+  if (!(await requireAdmin(interaction))) return;
+  const group = await getGroup(groupId);
+  if (!group) return ephemeralError(interaction, 'Group not found.');
+  const modal = new ModalBuilder().setCustomId(`bs:panel:edate:modal:${group.id}`).setTitle('Matches Date');
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId('d_date')
+        .setLabel('Date — 30, 30-09 or 2026-09-30 (empty = clear)')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(false)
+        .setMaxLength(10)
+        .setValue(group.matchDate ? formatIST(group.matchDate).split(' ')[0] : '')
+        .setPlaceholder('2026-10-05')
+    )
+  );
+  return interaction.showModal(modal);
+}
+
+/** Matches-date modal submit. */
+async function idpDateModal(interaction, groupId) {
+  if (!(await requireAdmin(interaction))) return;
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  const raw = (interaction.fields.getTextInputValue('d_date') || '').trim();
+  let matchDate = null;
+  if (raw) {
+    // Parse leniently, keep midnight IST like group creation does.
+    const d = parseLenientDateTimeIST(raw, '00:00');
+    if (!d) return interaction.editReply({ embeds: [errorEmbed('Invalid date. Use 30, 30-09 or 2026-09-30.')] });
+    matchDate = d;
+  }
+  await prisma.scrimGroup.update({ where: { id: String(groupId) }, data: { matchDate } })
+    .catch((e) => console.error('[scrimgroups] date update failed:', e.message));
+  await refreshScrimIdpPanel(interaction.client, groupId);
+  await audit('bs:panel:edit', interaction.user.id, `group ${groupId} matchDate -> ${raw || 'cleared'}`);
+  return interaction.editReply({ embeds: [successEmbed('Matches date updated — panel refreshed.')] });
+}
+
 /**
  * Create a scrim group: Discord role + private channel, DB records
- * (ScrimGroup + 21 ScrimSlots 5..25 + 2 ScrimMatches), management panel,
- * team self-service panel. Admin-only.
+ * (ScrimGroup + 21 ScrimSlots 5..25 + 2 ScrimMatches), IDP schedule panel,
+ * management panel, team self-service panel. Admin-only.
  */
 async function createScrimGroup(interaction, track, { date, map1, map2, idp1, idp2 }) {
   const stepLog = (s) => console.log(`[scrimgroups] G${track || '?'} ${interaction.user.id}: ${s}`);
@@ -392,7 +649,17 @@ async function createScrimGroup(interaction, track, { date, map1, map2, idp1, id
       return ephemeralError(interaction, 'Could not create the group (Discord or database error). Nothing was left behind — please retry.');
     }
 
-    // Panels into the group channel
+    // Panels into the group channel — IDP schedule panel first (tournament-style
+    // detail display with Edit + Lock/Unlock), then management, then self-service.
+    try {
+      const idpMatches = await prisma.scrimMatch
+        .findMany({ where: { groupId: group.id }, orderBy: { matchNo: 'asc' } })
+        .catch(() => []);
+      // Channel starts locked (group role denies SendMessages + AttachFiles).
+      await channel.send(scrimIdpPanel(group, idpMatches, true));
+    } catch (e) {
+      console.error('[scrimgroups] idp panel post failed:', e.message);
+    }
     try {
       const msg = await channel.send(groupPanel(group));
       const others = await prisma.scrimGroup.findMany({
@@ -1030,8 +1297,46 @@ async function handle(interaction) {
     const id = interaction.customId || '';
     if (!id.startsWith('bs:')) return false;
 
+    // Scrims IDP schedule panel: Edit + Lock/Unlock (bs:panel:edit|lock|unlock:<groupId>)
+    let m = id.match(/^bs:panel:(edit|lock|unlock):(.+)$/);
+    if (m && interaction.isButton()) {
+      await idpPanelAction(interaction, m[1], m[2]);
+      return true;
+    }
+    // IDP panel edit sub-flow
+    m = id.match(/^bs:panel:ematch:modal:(.+)$/);
+    if (m && interaction.isModalSubmit()) {
+      await idpTimesModal(interaction, m[1]);
+      return true;
+    }
+    m = id.match(/^bs:panel:edate:modal:(.+)$/);
+    if (m && interaction.isModalSubmit()) {
+      await idpDateModal(interaction, m[1]);
+      return true;
+    }
+    m = id.match(/^bs:panel:ematch:(.+)$/);
+    if (m && interaction.isStringSelectMenu()) {
+      await idpMatchSelect(interaction, m[1]);
+      return true;
+    }
+    m = id.match(/^bs:panel:emap:(.+)$/);
+    if (m && interaction.isStringSelectMenu()) {
+      await idpMapSelect(interaction, m[1]);
+      return true;
+    }
+    m = id.match(/^bs:panel:etimes:(.+)$/);
+    if (m && interaction.isButton()) {
+      await idpTimesButton(interaction, m[1]);
+      return true;
+    }
+    m = id.match(/^bs:panel:edate:(.+)$/);
+    if (m && interaction.isButton()) {
+      await idpDateButton(interaction, m[1]);
+      return true;
+    }
+
     // Staff group panel buttons: bs:panel:<action>:<groupId>
-    let m = id.match(/^bs:panel:(remind|publish|warn|remove|qualify):(.+)$/);
+    m = id.match(/^bs:panel:(remind|publish|warn|remove|qualify):(.+)$/);
     if (m && interaction.isButton()) {
       await panelAction(interaction, m[1], m[2]);
       return true;
@@ -1151,5 +1456,6 @@ module.exports = {
   saveSession,
   getSession,
   deleteSession,
-  _test: { slotRangeOk, startAtFromIdp, shouldEscalateToBan },
+  refreshScrimIdpPanel,
+  _test: { slotRangeOk, startAtFromIdp, shouldEscalateToBan, isGroupLocked, scrimIdpPanelTitle: require('../scrimpanels').scrimIdpPanelTitle },
 };
