@@ -82,6 +82,12 @@ function ok(name, cond) {
   const isrc = fs.readFileSync(__dirname + '/src/index.js', 'utf8');
   ok('startup calls reconcileScrimPanels', isrc.includes('reconcileScrimPanels(c)'));
 
+  // --- suspended team messaging ----------------------------------------------
+  const ssrc2 = fs.readFileSync(__dirname + '/src/flows/scrims.js', 'utf8');
+  ok('guardCheck names suspension plainly', ssrc2.includes("Your team is currently **suspended**. Contact staff to reactivate it before registering for scrims."));
+  ok('confirm transaction throws TEAM_SUSPENDED', ssrc2.includes("if (team.status === 'SUSPENDED') throw new Error('TEAM_SUSPENDED')"));
+  ok('REG_ERRORS maps TEAM_SUSPENDED', ssrc2.includes("TEAM_SUSPENDED: 'Your team is currently **suspended**"));
+
   // --- isGroupLocked --------------------------------------------------------
   const { isGroupLocked } = groups._test;
   const ow = (allow, deny) => ({

@@ -661,6 +661,11 @@ async function guardCheck(interaction, track) {
   if (!team) {
     return { problem: 'You need a registered team to join scrims. Register a team from the team panel first.' };
   }
+  // A suspended team is found but must stay blocked — say so plainly instead
+  // of blaming scrims verification.
+  if (team.status === 'SUSPENDED') {
+    return { problem: 'Your team is currently **suspended**. Contact staff to reactivate it before registering for scrims.' };
+  }
 
   // (a) verified: scrims row, verified role, or ACTIVE team from team verification.
   let scrimsVerified = false;
@@ -817,6 +822,7 @@ const REG_ERRORS = {
   GROUP_CLOSED: 'That group is no longer open.',
   REG_CLOSED: 'Registration closed for this group (15 minutes before IDP).',
   NOT_VERIFIED: 'Please complete **Scrims Verification** first.',
+  TEAM_SUSPENDED: 'Your team is currently **suspended**. Contact staff to reactivate it.',
   BANNED: 'You are banned from scrims. Contact staff.',
   NO_TEAM: 'You no longer own a team.',
   NO_T3_ROLE: 'T3 registration requires the T3 role.',
@@ -853,6 +859,7 @@ async function onRegConfirm(interaction) {
           })
         : null;
       if (!team) throw new Error('NO_TEAM');
+      if (team.status === 'SUSPENDED') throw new Error('TEAM_SUSPENDED');
       // Team-verification connection: an ACTIVE team from the main team
       // verification satisfies the scrims-verification requirement.
       if (!isVerifiedForScrims({ scrimsVerified, hasVerifiedRole: false, team })) throw new Error('NOT_VERIFIED');
