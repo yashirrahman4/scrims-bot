@@ -12,8 +12,24 @@ const scrimGroups = require('./flows/scrimgroups');
 const scrimAdmin = require('./flows/scrimadmin');
 
 // Build tag — bump when shipping a fix so the console shows which code is live.
-const BUILD = '2026-09-30.scrimport-1';
+const BUILD = '2026-09-30.scrimport-2';
 console.log(`🤖 scrims-bot ${BUILD} starting...`);
+
+// Git auto-update diagnostic: the HeavenCloud egg runs `git pull` on restart.
+// If the server's clone is broken (no upstream tracking, detached HEAD, dirty
+// tree), the pull silently does nothing and old code keeps running — this log
+// line makes that visible in the console.
+try {
+  const { execSync } = require('child_process');
+  const git = (args) => execSync(`git ${args}`, { stdio: 'pipe', timeout: 10000 }).toString().trim();
+  const head = git('rev-parse --short HEAD');
+  let upstream = 'none';
+  try { upstream = git('rev-parse --abbrev-ref --symbolic-full-name @{u}'); } catch {}
+  const dirty = git('status --porcelain');
+  console.log(`🔧 [git] HEAD=${head} upstream=${upstream} clean=${dirty === ''}`);
+} catch {
+  console.log('🔧 [git] no git repo / git unavailable — restart auto-update is disabled');
+}
 
 if (!config.token) {
   console.error('❌ Missing DISCORD_TOKEN in environment (.env).');
