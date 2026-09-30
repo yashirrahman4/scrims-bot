@@ -1,3 +1,4 @@
+const { MessageFlags } = require('discord.js');
 const teamFlows = require('./flows/team');
 const eventFlows = require('./flows/events');
 const adminFlows = require('./flows/admin');
@@ -78,7 +79,7 @@ async function handleInteraction(interaction) {
     if (interaction.isChatInputCommand()) {
       if (interaction.commandName === 'setup-panel') {
         // Acknowledge FIRST — the admin check below hits the database.
-        await interaction.deferReply({ ephemeral: true });
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
         if (!(await requireAdmin(interaction))) return;
         const which = interaction.options.getString('panel');
         const builders = {
@@ -106,7 +107,7 @@ async function handleInteraction(interaction) {
         return interaction.editReply({ content: `✅ Panel posted in this channel.` });
       }
       if (interaction.commandName === 'export') {
-        await interaction.deferReply({ ephemeral: true });
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
         if (!(await requireAdmin(interaction))) return;
         const sub = interaction.options.getSubcommand();
         if (sub === 'verified') return exportFlows.exportVerified(interaction);
@@ -115,16 +116,16 @@ async function handleInteraction(interaction) {
         return interaction.editReply({ embeds: [errorEmbed('Unknown export.')] });
       }
       if (interaction.commandName === 'create_group' || interaction.commandName === 'create_group_t3') {
-        await interaction.deferReply({ ephemeral: true });
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
         if (await cmdsG.handleSlashCommand(interaction)) return;
         return interaction.editReply({ embeds: [errorEmbed('Unknown command.')] });
       }
       if (interaction.commandName === 'message_template' || interaction.commandName === 'bot_health') {
-        await interaction.deferReply({ ephemeral: true });
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
         return scrimAdmin.handle(interaction);
       }
       if (interaction.commandName === 'ss_idp') {
-        await interaction.deferReply({ ephemeral: true });
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
         if (!(await requireAdmin(interaction))) return;
         return handleSsIdpManual(interaction);
       }
@@ -151,7 +152,7 @@ async function handleInteraction(interaction) {
         if (interaction.deferred) {
           await interaction.editReply({ content: null, embeds: [errorEmbed('Something went wrong. Please try again.')], components: [] });
         } else if (!interaction.replied) {
-          await interaction.reply({ embeds: [errorEmbed('Something went wrong. Please try again.')], ephemeral: true });
+          await interaction.reply({ embeds: [errorEmbed('Something went wrong. Please try again.')], flags: MessageFlags.Ephemeral });
         }
       }
     } catch {}

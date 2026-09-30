@@ -20,8 +20,7 @@ const {
   ModalBuilder,
   PermissionFlagsBits,
   TextInputBuilder,
-  TextInputStyle,
-} = require('discord.js');
+  TextInputStyle, MessageFlags} = require('discord.js');
 const { prisma } = require('../db');
 const {
   requireAdmin,
@@ -129,7 +128,7 @@ function notifyVacancySafe(groupId, client) {
 // ---------- Internal helpers ----------
 
 async function ephemeralError(interaction, msg) {
-  const payload = { embeds: [errorEmbed(msg)], ephemeral: true };
+  const payload = { embeds: [errorEmbed(msg)], flags: MessageFlags.Ephemeral };
   if (interaction.replied || interaction.deferred) await interaction.followUp(payload).catch(() => {});
   else await interaction.reply(payload).catch(() => {});
 }
@@ -235,8 +234,10 @@ async function renderSlotList(groupId) {
  * team self-service panel. Admin-only.
  */
 async function createScrimGroup(interaction, track, { date, map1, map2, idp1, idp2 }) {
+  const stepLog = (s) => console.log(`[scrimgroups] G${track || '?'} ${interaction.user.id}: ${s}`);
   try {
-    if (!(await requireAdmin(interaction))) return;
+    stepLog(`start date=${date} maps=${map1}/${map2} idp=${idp1}/${idp2}`);
+    if (!(await requireAdmin(interaction))) { stepLog('denied: not admin'); return; }
     track = String(track || '').toUpperCase();
     if (!['OQ', 'T3'].includes(track)) {
       return ephemeralError(interaction, 'Invalid track. Use OQ or T3.');
@@ -293,6 +294,7 @@ async function createScrimGroup(interaction, track, { date, map1, map2, idp1, id
         } catch (e) {
           console.error('[scrimgroups] role create failed:', e.message);
         }
+        stepLog(`attempt role ${role ? `ok (${role.id})` : 'skipped/failed'}`);
 
         // Private channel: "br-<track>-g<no>" under the track category (if set).
         // Group role is read-only (ViewChannel + history, no Send/Attach) so
@@ -327,6 +329,7 @@ async function createScrimGroup(interaction, track, { date, map1, map2, idp1, id
         } catch (e) {
           console.error('[scrimgroups] channel create failed:', e.message);
         }
+        stepLog(`attempt channel ${channel ? `ok (${channel.id})` : 'FAILED'}`);
         if (!channel) throw new Error('CHANNEL_FAILED');
 
         // DB records
@@ -357,6 +360,7 @@ async function createScrimGroup(interaction, track, { date, map1, map2, idp1, id
           data: { groupId: group.id, matchNo: 2, map: map2, idpAt: idpAt2, startAt: startAt2 },
         });
         created = true;
+        stepLog(`db rows ok (groupNo ${groupNo})`);
       } catch (e) {
         lastError = e;
         console.error(`[scrimgroups] create attempt ${attempt + 1} failed:`, e.message || e);
@@ -405,8 +409,9 @@ async function createScrimGroup(interaction, track, { date, map1, map2, idp1, id
     }
 
     await audit('scrim_group_create', interaction.user.id, `${track} G${groupNo} created (channel ${channel.id})`);
+    stepLog(`panels posted, sending final reply (G${groupNo})`);
     // Deferred-safe: the router defers /create_group before we get here.
-    return safeReply(interaction, {
+    const sent = await safeReply(interaction, {
       embeds: [
         successEmbed(
           `✅ Group created — **${track} G${groupNo}**\n<#${channel.id}>\n` +
@@ -415,8 +420,10 @@ async function createScrimGroup(interaction, track, { date, map1, map2, idp1, id
             '21 slots (5–25) ready.'
         ),
       ],
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
+    stepLog(`final reply ${sent ? 'sent' : 'FAILED'}`);
+    return sent;
   } catch (e) {
     console.error('[scrimgroups] createScrimGroup failed:', e);
     await ephemeralError(interaction, 'Could not create the scrim group.');
@@ -455,7 +462,7 @@ async function panelAction(interaction, action, groupId) {
         embeds: [embed],
       });
       if (!sent) return ephemeralError(interaction, 'Could not post the reminder (channel missing?).');
-      return interaction.reply({ embeds: [successEmbed('✅ Match reminder posted.')], ephemeral: true });
+      return interaction.reply({ embeds: [successEmbed('✅ Match reminder posted.')], flags: MessageFlags.Ephemeral });
     } catch (e) {
       console.error('[scrimgroups] remind failed:', e);
       return ephemeralError(interaction, 'Could not post the reminder.');
@@ -475,7 +482,7 @@ async function panelAction(interaction, action, groupId) {
         ],
       });
       if (!sent) return ephemeralError(interaction, 'Could not publish the slot list.');
-      return interaction.reply({ embeds: [successEmbed('✅ Slot list published.')], ephemeral: true });
+      return interaction.reply({ embeds: [successEmbed('✅ Slot list published.')], flags: MessageFlags.Ephemeral });
     } catch (e) {
       console.error('[scrimgroups] publish failed:', e);
       return ephemeralError(interaction, 'Could not publish the slot list.');
@@ -688,7 +695,7 @@ async function warnModalSubmit(interaction, groupId) {
       embeds: [successEmbed(autoBanned
         ? `⛔ **${teamName}** reached ${warningNo}/${MAX_WARNINGS} warnings — auto-banned for ${BAN_DAYS} days.`
         : `⚠️ Warning ${warningNo}/${MAX_WARNINGS} recorded for **${teamName}** (slot ${slotNo}).`)],
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
   } catch (e) {
     console.error('[scrimgroups] warn submit failed:', e);
@@ -737,7 +744,7 @@ async function removeModalSubmit(interaction, groupId) {
     notifyVacancySafe(group.id, interaction.client);
     return interaction.reply({
       embeds: [successEmbed(`🗑️ **${team ? team.name : reg.teamId}** removed from slot ${slotNo}.`)],
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
   } catch (e) {
     console.error('[scrimgroups] remove submit failed:', e);
@@ -843,7 +850,7 @@ async function qualifyModalSubmit(interaction, groupId) {
     const announce = winner
       ? `🏆 ${group.groupType} Group ${group.groupNo} — **${winner.name}** qualifies`
       : `🏆 ${group.groupType} Group ${group.groupNo} — no qualifier this time`;
-    return interaction.reply({ embeds: [successEmbed(`${announce}. Group locked.` )], ephemeral: true });
+    return interaction.reply({ embeds: [successEmbed(`${announce}. Group locked.` )], flags: MessageFlags.Ephemeral });
   } catch (e) {
     console.error('[scrimgroups] qualify submit failed:', e);
     return ephemeralError(interaction, 'Could not publish the qualifier.');
@@ -872,7 +879,7 @@ async function teamCancelButton(interaction, groupId) {
     return interaction.reply({
       content: `Cancel your slot (#${found.reg.slotNo}, **${found.team.name}**)? This frees the slot for another team.`,
       components: [row],
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
   } catch (e) {
     console.error('[scrimgroups] cancel button failed:', e);
@@ -947,7 +954,7 @@ async function teamChangeSelect(interaction, groupId) {
         `Move **${found.team.name}** from ${group.groupType} G${group.groupNo} (slot #${found.reg.slotNo}) ` +
         `to ${target.groupType} G${target.groupNo}? You'll take the lowest free slot there.`,
       components: [row],
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
   } catch (e) {
     console.error('[scrimgroups] change select failed:', e);

@@ -17,8 +17,7 @@ const {
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
-  StringSelectMenuBuilder,
-} = require('discord.js');
+  StringSelectMenuBuilder, MessageFlags} = require('discord.js');
 const { prisma } = require('../db');
 const {
   getOrCreateUser,
@@ -124,7 +123,7 @@ function rosterFromTeam(team) {
 // ---------- small discord helpers ----------
 
 async function replyEph(interaction, payload) {
-  const data = { ...payload, ephemeral: true };
+  const data = { ...payload, flags: MessageFlags.Ephemeral };
   try {
     if (interaction.deferred) return await interaction.editReply(data);
     if (interaction.replied) return await interaction.followUp(data);

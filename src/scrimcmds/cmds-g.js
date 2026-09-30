@@ -5,9 +5,10 @@
  *   cmdBuilders       -> two SlashCommandBuilder JSONs for the integrator
  *   handleSlashCommand(interaction) -> true when handled (admin-only enforced in handler)
  */
-const { SlashCommandBuilder } = require('discord.js');
+const { SlashCommandBuilder, MessageFlags } = require('discord.js');
 const config = require('../config');
 const { createScrimGroup } = require('../flows/scrimgroups');
+const { safeReply, errorEmbed } = require('../utils');
 
 const MAP_CHOICES = (config.defaultMaps || ['Erangel', 'Miramar', 'Rondo']).map((m) => ({
   name: m,
@@ -79,6 +80,11 @@ async function handleSlashCommand(interaction) {
     return false;
   } catch (e) {
     console.error('[cmds-g] handleSlashCommand failed:', e);
+    // Never leave the interaction hanging — the router already deferred it.
+    await safeReply(interaction, {
+      embeds: [errorEmbed('Could not create the scrim group. Please try again — if it keeps failing, check the bot console for [scrimgroups] errors.')],
+      flags: MessageFlags.Ephemeral,
+    }).catch(() => {});
     return true;
   }
 }

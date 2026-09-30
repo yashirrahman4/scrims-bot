@@ -9,8 +9,7 @@ const {
   ChannelSelectMenuBuilder,
   RoleSelectMenuBuilder,
   ChannelType,
-  EmbedBuilder,
-} = require('discord.js');
+  EmbedBuilder, MessageFlags} = require('discord.js');
 const { prisma } = require('../db');
 const {
   getSettings,
@@ -56,7 +55,7 @@ async function handle(interaction) {
       if (interaction.deferred) {
         await interaction.editReply({ content: null, embeds: [errorEmbed('Something went wrong. Please try again.')], components: [] });
       } else if (!interaction.replied) {
-        await interaction.reply({ embeds: [errorEmbed('Something went wrong. Please try again.')], ephemeral: true });
+        await interaction.reply({ embeds: [errorEmbed('Something went wrong. Please try again.')], flags: MessageFlags.Ephemeral });
       }
     } catch {}
   }
@@ -163,12 +162,12 @@ async function showEventManager(interaction, eventId, useUpdate) {
   if (!event) {
     const payload = { content: 'Event not found.', embeds: [], components: [] };
     if (interaction.deferred) return interaction.editReply(payload);
-    return useUpdate ? interaction.update(payload) : interaction.reply({ ...payload, ephemeral: true });
+    return useUpdate ? interaction.update(payload) : interaction.reply({ ...payload, flags: MessageFlags.Ephemeral });
   }
   const taken = await regCount(event.id);
   const payload = { content: null, embeds: [eventDetailEmbed(event, taken)], components: eventActionRows(event) };
   if (interaction.deferred) return interaction.editReply(payload);
-  return useUpdate ? interaction.update(payload) : interaction.reply({ ...payload, ephemeral: true });
+  return useUpdate ? interaction.update(payload) : interaction.reply({ ...payload, flags: MessageFlags.Ephemeral });
 }
 
 // ---------- registration manager (mirrors the reference tournament manager) ----------
@@ -256,7 +255,7 @@ async function showRegManager(interaction, eventId, useUpdate) {
   if (!event) {
     const payload = { content: 'Event not found.', embeds: [], components: [] };
     if (interaction.deferred) return interaction.editReply(payload);
-    return useUpdate ? interaction.update(payload) : interaction.reply({ ...payload, ephemeral: true });
+    return useUpdate ? interaction.update(payload) : interaction.reply({ ...payload, flags: MessageFlags.Ephemeral });
   }
   const taken = await regCount(event.id);
   const settings = await getSettings(interaction.guildId);
@@ -266,7 +265,7 @@ async function showRegManager(interaction, eventId, useUpdate) {
   const idpState = !event.idpCategoryId ? 'none' : idpHave >= nGroups ? 'done' : 'partial';
   const payload = { content: null, embeds: [regManagerEmbed(event, taken, idpState)], components: regManagerRows(event, idpState) };
   if (interaction.deferred) return interaction.editReply(payload);
-  return useUpdate ? interaction.update(payload) : interaction.reply({ ...payload, ephemeral: true });
+  return useUpdate ? interaction.update(payload) : interaction.reply({ ...payload, flags: MessageFlags.Ephemeral });
 }
 
 // ---------- log channel setup (Admin Panel -> Logs) ----------
@@ -328,7 +327,7 @@ async function showLogSetup(interaction, useUpdate, actionKey) {
   }
   const payload = { content: null, embeds: [logSetupEmbed(settings)], components: rows };
   if (interaction.deferred) return interaction.editReply(payload);
-  return useUpdate ? interaction.update(payload) : interaction.reply({ ...payload, ephemeral: true });
+  return useUpdate ? interaction.update(payload) : interaction.reply({ ...payload, flags: MessageFlags.Ephemeral });
 }
 
 // ---------- buttons ----------
@@ -370,11 +369,11 @@ async function handleButton(interaction) {
           { label: 'Tournament', value: 'TOURNAMENT', description: 'Full tournament event', emoji: '🏆' },
         ])
     );
-    return interaction.reply({ content: 'What do you want to create?', components: [row], ephemeral: true });
+    return interaction.reply({ content: 'What do you want to create?', components: [row], flags: MessageFlags.Ephemeral });
   }
 
   if (id === 'admin:events' || id === 'admin:regs') {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const events = await prisma.tournament.findMany({
       where: { status: { notIn: ['COMPLETED', 'CANCELLED'] } },
       orderBy: { createdAt: 'desc' },
@@ -423,7 +422,7 @@ async function handleButton(interaction) {
         .setPlaceholder('Select announcement channel')
         .addChannelTypes(ChannelType.GuildText)
     );
-    return interaction.reply({ content: 'Where should the announcement go?', components: [row], ephemeral: true });
+    return interaction.reply({ content: 'Where should the announcement go?', components: [row], flags: MessageFlags.Ephemeral });
   }
 
   if (id === 'admin:lock') {
@@ -433,7 +432,7 @@ async function handleButton(interaction) {
         .setPlaceholder('Select a channel to lock/unlock')
         .addChannelTypes(ChannelType.GuildText)
     );
-    return interaction.reply({ content: 'Which channel?', components: [row], ephemeral: true });
+    return interaction.reply({ content: 'Which channel?', components: [row], flags: MessageFlags.Ephemeral });
   }
 
   if (id === 'admin:dm') {
@@ -458,7 +457,7 @@ async function handleButton(interaction) {
     if (!draft) return interaction.update({ content: 'Draft expired — start again.', embeds: [], components: [] });
     dmDrafts.delete(interaction.user.id);
     await interaction.update({ content: '📣 Starting DM broadcast…', embeds: [], components: [] });
-    const statusMsg = await interaction.followUp({ content: '📣 Sending… (0 sent)', ephemeral: true });
+    const statusMsg = await interaction.followUp({ content: '📣 Sending… (0 sent)', flags: MessageFlags.Ephemeral });
     const teams = await prisma.team.findMany({ where: { status: 'ACTIVE' }, include: { owner: true }, orderBy: { createdAt: 'asc' } });
     let sent = 0;
     let failed = 0;
@@ -538,7 +537,7 @@ async function handleButton(interaction) {
   }
 
   if (id === 'admin:logs:activity') {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const logs = await prisma.auditLog.findMany({ orderBy: { createdAt: 'desc' }, take: 15 });
     const lines = logs.map((l) => {
       const t = l.createdAt.toISOString().slice(0, 16).replace('T', ' ');
@@ -552,7 +551,7 @@ async function handleButton(interaction) {
   if (id.startsWith('admin:log:clear:')) {
     const key = id.split(':')[3];
     const a = LOG_ACTIONS.find((x) => x.key === key);
-    if (!a) return interaction.reply({ embeds: [errorEmbed('Unknown log action.')], ephemeral: true });
+    if (!a) return interaction.reply({ embeds: [errorEmbed('Unknown log action.')], flags: MessageFlags.Ephemeral });
     await interaction.deferUpdate();
     await prisma.guildSettings.upsert({
       where: { guildId: interaction.guildId },
@@ -568,7 +567,7 @@ async function handleButton(interaction) {
       new ButtonBuilder().setCustomId('admin:settings:general').setLabel('General Settings').setStyle(ButtonStyle.Primary).setEmoji('⚙️'),
       new ButtonBuilder().setCustomId('admin:settings:reg').setLabel('Registration Settings').setStyle(ButtonStyle.Secondary).setEmoji('🎯')
     );
-    return interaction.reply({ content: 'Which settings do you want to change?', components: [row], ephemeral: true });
+    return interaction.reply({ content: 'Which settings do you want to change?', components: [row], flags: MessageFlags.Ephemeral });
   }
 
   if (id === 'admin:settings:general') {
@@ -636,7 +635,7 @@ async function handleButton(interaction) {
       return interaction.followUp({
         embeds: [new EmbedBuilder().setColor(0xed4245).setDescription(`Delete **${event.name}** and all its registrations?`)],
         components: [row],
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
     }
 
@@ -647,11 +646,11 @@ async function handleButton(interaction) {
       return interaction.followUp({
         content: `📣 Where should the registration post for **${event.name}** go?`,
         components: announcePickerRows(event.id),
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
     }
 
-    if (!next) return interaction.followUp({ embeds: [errorEmbed('Unknown action.')], ephemeral: true });
+    if (!next) return interaction.followUp({ embeds: [errorEmbed('Unknown action.')], flags: MessageFlags.Ephemeral });
     await prisma.tournament.update({ where: { id: event.id }, data: { status: next } });
     await adminAudit(interaction, 'EVENT_STATUS', `${event.name} -> ${next}`);
     if (action === 'open') {
@@ -659,7 +658,7 @@ async function handleButton(interaction) {
       return interaction.followUp({
         content: `📣 **${event.name}** is now OPEN. Where should the registration post go?`,
         components: announcePickerRows(event.id),
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
     }
     return showEventManager(interaction, event.id, true);
@@ -702,7 +701,7 @@ async function handleButton(interaction) {
       starttime: { title: 'Edit Registration Start', label: 'Start — YYYY-MM-DD HH:MM IST (empty = clear)', style: TextInputStyle.Short, max: 16, ph: '2026-10-01 18:00' },
       successmsg: { title: 'Edit Success Message', label: 'Message (empty = clear)', style: TextInputStyle.Paragraph, max: 500, ph: 'Welcome! Check the rules channel before match day.' },
     }[field];
-    if (!cfg) return interaction.reply({ embeds: [errorEmbed('Unknown field.')], ephemeral: true });
+    if (!cfg) return interaction.reply({ embeds: [errorEmbed('Unknown field.')], flags: MessageFlags.Ephemeral });
     // showModal must NOT be preceded by defer — Discord forbids defer-then-modal.
     const eventId = id.split(':')[3];
     const modal = new ModalBuilder().setCustomId(`admin:regedit:submit:${field}:${eventId}`).setTitle(cfg.title);
@@ -756,7 +755,7 @@ async function handleButton(interaction) {
     }
     return interaction.followUp({
       content: `✅ **${event.name}** registration is LIVE — announcement posted in <#${event.regChannelId}>.`,
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
   }
 
@@ -783,7 +782,7 @@ async function handleButton(interaction) {
     await showRegManager(interaction, eventId, true);
     return interaction.followUp({
       content: `✅ Registration panel for **${event.name}** posted in <#${event.regChannelId}>. Registration is still **${event.status}** — players will see "not open yet" until you start it.`,
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
   }
 
@@ -887,7 +886,7 @@ async function handleButton(interaction) {
   if (id.startsWith('admin:idp:yes:')) {
     const eventId = id.split(':')[3];
     const event = await prisma.tournament.findUnique({ where: { id: eventId } });
-    if (!event) return interaction.reply({ content: 'Event not found.', ephemeral: true });
+    if (!event) return interaction.reply({ content: 'Event not found.', flags: MessageFlags.Ephemeral });
     if (event.idpCategoryId) {
       // Resume — the naming pattern was already chosen.
       await interaction.deferUpdate();
@@ -930,7 +929,7 @@ async function handleButton(interaction) {
     if (action === 'edit') {
       // showModal must be the first acknowledge — no defer allowed here.
       const team = await prisma.team.findUnique({ where: { id: teamId }, include: { members: { include: { player: true } }, owner: true } });
-      if (!team) return interaction.reply({ embeds: [errorEmbed('Team not found.')], ephemeral: true });
+      if (!team) return interaction.reply({ embeds: [errorEmbed('Team not found.')], flags: MessageFlags.Ephemeral });
       const modal = new ModalBuilder().setCustomId(`admin:team:edit:modal:${team.id}`).setTitle('Edit Team');
       const mk = (cid, label, value, max) =>
         new ActionRowBuilder().addComponents(
@@ -959,7 +958,7 @@ async function handleButton(interaction) {
         new ButtonBuilder().setCustomId(`admin:team:disband:yes:${team.id}`).setLabel('Yes, disband').setStyle(ButtonStyle.Danger),
         new ButtonBuilder().setCustomId(`admin:team:disband:no:${team.id}`).setLabel('Keep').setStyle(ButtonStyle.Secondary)
       );
-      return interaction.followUp({ content: `Disband **${team.name} [${team.tag}]**?`, components: [row], ephemeral: true });
+      return interaction.followUp({ content: `Disband **${team.name} [${team.tag}]**?`, components: [row], flags: MessageFlags.Ephemeral });
     }
   }
 
@@ -1000,7 +999,7 @@ async function handleButton(interaction) {
     const draft = pendingCreations.get(token);
     if (!draft || draft.expiresAt < Date.now()) {
       pendingCreations.delete(token);
-      return interaction.reply({ embeds: [errorEmbed('This form expired. Please start again with Create Event.')], ephemeral: true });
+      return interaction.reply({ embeds: [errorEmbed('This form expired. Please start again with Create Event.')], flags: MessageFlags.Ephemeral });
     }
     const modal2 = new ModalBuilder().setCustomId(`admin:create:modal2:${token}`).setTitle(draft.type === 'SCRIM' ? 'Create Scrim (2/2)' : 'Create Tournament (2/2)');
     const mk2 = (cid, label, placeholder, style, max) =>
@@ -1022,7 +1021,7 @@ async function showRegistrations(interaction, eventId, useUpdate) {
   if (!event) {
     const p = { content: 'Event not found.', embeds: [], components: [] };
     if (interaction.deferred) return interaction.editReply(p);
-    return useUpdate ? interaction.update(p) : interaction.reply({ ...p, ephemeral: true });
+    return useUpdate ? interaction.update(p) : interaction.reply({ ...p, flags: MessageFlags.Ephemeral });
   }
   const regs = await prisma.tournamentRegistration.findMany({
     where: { tournamentId: eventId, status: { not: 'REMOVED' } },
@@ -1060,7 +1059,7 @@ async function showRegistrations(interaction, eventId, useUpdate) {
   }
   const payload = { content: null, embeds: [embed], components };
   if (interaction.deferred) return interaction.editReply(payload);
-  return useUpdate ? interaction.update(payload) : interaction.reply({ ...payload, ephemeral: true });
+  return useUpdate ? interaction.update(payload) : interaction.reply({ ...payload, flags: MessageFlags.Ephemeral });
 }
 
 // ---------- selects ----------
@@ -1296,7 +1295,7 @@ async function handleModal(interaction) {
 
   if (id.startsWith('admin:idp:name:')) {
     const eventId = id.split(':')[3];
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const pattern = interaction.fields.getTextInputValue('p_name').trim().slice(0, 60);
     if (!pattern) return interaction.editReply({ embeds: [errorEmbed('Please enter a name pattern.')] });
     await prisma.tournament.update({ where: { id: eventId }, data: { idpNamePattern: pattern } });
@@ -1305,7 +1304,7 @@ async function handleModal(interaction) {
 
   if (id.startsWith('admin:poster:modal:')) {
     const eventId = id.split(':')[3];
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const raw = interaction.fields.getTextInputValue('p_url');
     const problem = await validatePosterUrl(raw);
     if (problem) return interaction.editReply({ embeds: [errorEmbed(problem)] });
@@ -1325,7 +1324,7 @@ async function handleModal(interaction) {
 
   if (id.startsWith('admin:regedit:submit:')) {
     const [, , , field, eventId] = id.split(':');
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const raw = interaction.fields.getTextInputValue('f_value').trim();
     const event = await prisma.tournament.findUnique({ where: { id: eventId } });
     if (!event) return interaction.editReply({ embeds: [errorEmbed('Event not found.')] });
@@ -1386,7 +1385,7 @@ async function handleModal(interaction) {
 
   if (id.startsWith('admin:create:modal1:')) {
     const type = id.split(':')[3];
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const name = interaction.fields.getTextInputValue('e_name').trim();
     const dateRaw = interaction.fields.getTextInputValue('e_date').trim();
     const limitRaw = interaction.fields.getTextInputValue('e_limit').trim();
@@ -1427,9 +1426,9 @@ async function handleModal(interaction) {
     const draft = pendingCreations.get(token);
     if (!draft || draft.expiresAt < Date.now()) {
       pendingCreations.delete(token);
-      return interaction.reply({ embeds: [errorEmbed('This form expired. Please start again with Create Event.')], ephemeral: true });
+      return interaction.reply({ embeds: [errorEmbed('This form expired. Please start again with Create Event.')], flags: MessageFlags.Ephemeral });
     }
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     pendingCreations.delete(token);
     const description = interaction.fields.getTextInputValue('e_desc').trim() || null;
     const regStartRaw = interaction.fields.getTextInputValue('e_regstart').trim();
@@ -1478,7 +1477,7 @@ async function handleModal(interaction) {
   }
 
   if (id === 'admin:teams:search') {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const q = interaction.fields.getTextInputValue('q').trim();
     const teams = await prisma.team.findMany({
       where: {
@@ -1502,7 +1501,7 @@ async function handleModal(interaction) {
   }
 
   if (id === 'admin:players:search') {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const q = interaction.fields.getTextInputValue('q').trim();
     const players = await prisma.player.findMany({
       where: { OR: [{ gameUid: q }, { ign: { contains: q, mode: 'insensitive' } }] },
@@ -1520,7 +1519,7 @@ async function handleModal(interaction) {
 
   if (id.startsWith('admin:team:edit:modal:')) {
     const teamId = id.split(':')[4];
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const team = await prisma.team.findUnique({ where: { id: teamId } });
     if (!team) return interaction.editReply({ embeds: [errorEmbed('Team not found.')] });
     const name = interaction.fields.getTextInputValue('t_name').trim() || team.name;
@@ -1542,7 +1541,7 @@ async function handleModal(interaction) {
 
   if (id.startsWith('admin:announce:modal:')) {
     const channelId = id.split(':')[3];
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const channel = await interaction.guild.channels.fetch(channelId).catch(() => null);
     if (!channel || !channel.isTextBased()) return interaction.editReply({ embeds: [errorEmbed('Channel not found.')] });
     const title = interaction.fields.getTextInputValue('a_title').trim();
@@ -1553,7 +1552,7 @@ async function handleModal(interaction) {
   }
 
   if (id === 'admin:dm:modal') {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const title = interaction.fields.getTextInputValue('dm_title').trim();
     const message = interaction.fields.getTextInputValue('dm_message').trim();
     dmDrafts.set(interaction.user.id, { title, message });
@@ -1583,7 +1582,7 @@ async function handleModal(interaction) {
 
 
   if (id === 'admin:settings:modal') {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const teamSize = parseInt(interaction.fields.getTextInputValue('s_teamsize').trim(), 10);
     const maxSubs = parseInt(interaction.fields.getTextInputValue('s_maxsubs').trim(), 10);
     const prefix = interaction.fields.getTextInputValue('s_prefix').trim().toUpperCase();
@@ -1606,7 +1605,7 @@ async function handleModal(interaction) {
   }
 
   if (id === 'admin:settings:reg:modal') {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const groupSize = parseInt(interaction.fields.getTextInputValue('s_groupsize').trim(), 10);
     if (!Number.isInteger(groupSize) || groupSize < 1 || groupSize > 100) {
       return interaction.editReply({ embeds: [errorEmbed('Teams per group must be between 1 and 100.')] });

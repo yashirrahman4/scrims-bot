@@ -29,8 +29,7 @@ const {
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
-  EmbedBuilder,
-} = require('discord.js');
+  EmbedBuilder, MessageFlags} = require('discord.js');
 const { prisma } = require('../db');
 const { requireAdmin, isAdmin, errorEmbed, successEmbed, formatIST, audit, numEnv } = require('../utils');
 const tpl = require('../services/scrimmsgtemplate');
@@ -276,14 +275,14 @@ async function onStartButton(interaction) {
   if (!payload || !payload.roomId || !payload.password || !payload.groupId) {
     await interaction.reply({
       embeds: [errorEmbed('This SS-IDP request expired. Please re-upload the screenshot or use `/ss_idp manual`.')],
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
     return;
   }
   if (payload.userId && payload.userId !== interaction.user.id) {
     await interaction.reply({
       embeds: [errorEmbed('Only the staff member who uploaded the screenshot can continue this.')],
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -320,17 +319,17 @@ async function onModalSubmit(interaction) {
     console.error('[scrimidp] session read failed:', err.message);
   }
   if (!payload || !payload.roomId || !payload.password || !payload.groupId) {
-    const reply = { embeds: [errorEmbed('This SS-IDP request expired. Please re-upload the screenshot or use `/ss_idp manual`.')], ephemeral: true };
+    const reply = { embeds: [errorEmbed('This SS-IDP request expired. Please re-upload the screenshot or use `/ss_idp manual`.')], flags: MessageFlags.Ephemeral };
     if (interaction.deferred || interaction.replied) await interaction.followUp(reply);
     else await interaction.reply(reply);
     return;
   }
   const lobbyTime = (interaction.fields.getTextInputValue('lobby_time') || '').trim();
   if (lobbyTime && !LOBBY_TIME_RE.test(lobbyTime)) {
-    await interaction.reply({ embeds: [errorEmbed('Lobby time must be HH:MM (24h IST), or leave it blank.')], ephemeral: true });
+    await interaction.reply({ embeds: [errorEmbed('Lobby time must be HH:MM (24h IST), or leave it blank.')], flags: MessageFlags.Ephemeral });
     return;
   }
-  await interaction.deferReply({ ephemeral: true });
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   let sent = null;
   try {
     sent = await postRoomIdp(payload.groupId, {
@@ -359,7 +358,7 @@ async function handle(interaction) {
     console.error('[scrimidp] handle error:', err.message);
     try {
       if (!interaction.replied && !interaction.deferred) {
-        await interaction.reply({ embeds: [errorEmbed('Something went wrong. Please try again.')], ephemeral: true });
+        await interaction.reply({ embeds: [errorEmbed('Something went wrong. Please try again.')], flags: MessageFlags.Ephemeral });
       }
     } catch {}
   }

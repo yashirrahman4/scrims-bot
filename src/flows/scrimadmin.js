@@ -11,8 +11,7 @@ const {
   ActionRowBuilder,
   StringSelectMenuBuilder,
   StringSelectMenuOptionBuilder,
-  AttachmentBuilder,
-} = require('discord.js');
+  AttachmentBuilder, MessageFlags} = require('discord.js');
 const { prisma } = require('../db');
 const { requireAdmin, errorEmbed, successEmbed, formatIST, audit, extractDiscordId, sendLogEmbed, safeReply } = require('../utils');
 const tpl = require('../services/scrimmsgtemplate');
@@ -82,20 +81,20 @@ async function handleMessageTemplateCmd(interaction) {
         )
         .setFooter({ text: FOOTER });
       // Deferred-safe: the router defers /message_template before we get here.
-      return safeReply(interaction, { embeds: [embed], ephemeral: true });
+      return safeReply(interaction, { embeds: [embed], flags: MessageFlags.Ephemeral });
     }
     // set
     const tname = interaction.options.getString('name', true);
     const content = interaction.options.getString('content', true);
     if (!TEMPLATE_NAMES.includes(tname)) {
-      return safeReply(interaction, { embeds: [errorEmbed(`Unknown template \`${tname}\`.`)], ephemeral: true });
+      return safeReply(interaction, { embeds: [errorEmbed(`Unknown template \`${tname}\`.`)], flags: MessageFlags.Ephemeral });
     }
     await tpl.setMessageTemplate(tname, content);
     await audit('TEMPLATE_SET', interaction.user.id, tname);
-    return safeReply(interaction, { embeds: [successEmbed(`Template \`${tname}\` updated.`)] , ephemeral: true });
+    return safeReply(interaction, { embeds: [successEmbed(`Template \`${tname}\` updated.`)] , flags: MessageFlags.Ephemeral });
   } catch (err) {
     console.error('[scrimadmin] message_template failed:', err.message);
-    const payload = { embeds: [errorEmbed('Failed to manage templates.')], ephemeral: true };
+    const payload = { embeds: [errorEmbed('Failed to manage templates.')], flags: MessageFlags.Ephemeral };
     return safeReply(interaction, payload);
   }
 }
@@ -301,11 +300,11 @@ async function handleButton(interaction) {
     }
     if (id === 'bs:lobby:refresh') {
       const n = await refreshAllLobbyPanels(interaction.client);
-      return interaction.reply({ embeds: [successEmbed(`Refreshed ${n} live lobby panel(s).`)], ephemeral: true });
+      return interaction.reply({ embeds: [successEmbed(`Refreshed ${n} live lobby panel(s).`)], flags: MessageFlags.Ephemeral });
     }
   } catch (err) {
     console.error('[scrimadmin] button failed:', err.message);
-    const payload = { embeds: [errorEmbed('Action failed.')], ephemeral: true };
+    const payload = { embeds: [errorEmbed('Action failed.')], flags: MessageFlags.Ephemeral };
     if (interaction.replied || interaction.deferred) return interaction.followUp(payload);
     return interaction.reply(payload);
   }
@@ -327,7 +326,7 @@ async function handleModal(interaction) {
     }
   } catch (err) {
     console.error('[scrimadmin] modal failed:', err.message);
-    const payload = { embeds: [errorEmbed('Action failed.')], ephemeral: true };
+    const payload = { embeds: [errorEmbed('Action failed.')], flags: MessageFlags.Ephemeral };
     if (interaction.replied || interaction.deferred) return interaction.followUp(payload);
     return interaction.reply(payload);
   }
@@ -347,7 +346,7 @@ async function handleLookupModal(interaction) {
   const query = interaction.fields.getTextInputValue('query').trim();
   const did = extractDiscordId(query);
   if (did === false) {
-    return interaction.reply({ embeds: [errorEmbed('Invalid Discord ID or team name.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Invalid Discord ID or team name.')], flags: MessageFlags.Ephemeral });
   }
   const ver = did
     ? await prisma.scrimsVerification.findUnique({ where: { ownerDiscordId: did } })
@@ -355,7 +354,7 @@ async function handleLookupModal(interaction) {
         where: { teamName: { contains: query, mode: 'insensitive' } },
       });
   if (!ver) {
-    return interaction.reply({ embeds: [errorEmbed('No verification record found.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('No verification record found.')], flags: MessageFlags.Ephemeral });
   }
 
   const team = await prisma.team
@@ -410,7 +409,7 @@ async function handleLookupModal(interaction) {
       { name: 'Ban status', value: banLines.slice(0, 1000) }
     )
     .setFooter({ text: FOOTER });
-  return interaction.reply({ embeds: [embed], ephemeral: true });
+  return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
 }
 
 async function handleBanModal(interaction) {
@@ -419,7 +418,7 @@ async function handleBanModal(interaction) {
   const reason = interaction.fields.getTextInputValue('reason').trim();
   const discordId = extractDiscordId(discordInput);
   if (!discordId) {
-    return interaction.reply({ embeds: [errorEmbed('Invalid Discord ID.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Invalid Discord ID.')], flags: MessageFlags.Ephemeral });
   }
   const days = parseInt(daysRaw, 10);
   const expiresAt = Number.isFinite(days) && days > 0 ? new Date(Date.now() + days * 86400000) : null;
@@ -447,7 +446,7 @@ async function handleBanModal(interaction) {
   await audit('SCRIMS_BAN', interaction.user.id, `${discordId} ${expiresAt ? days + 'd' : 'permanent'} — ${reason || 'no reason'}`);
   return interaction.reply({
     embeds: [successEmbed(`<@${discordId}> banned ${expiresAt ? `for ${days} day(s)` : 'permanently'}.`)],
-    ephemeral: true,
+    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -455,13 +454,13 @@ async function handleUnbanModal(interaction) {
   const discordInput = interaction.fields.getTextInputValue('discord_id').trim();
   const discordId = extractDiscordId(discordInput);
   if (!discordId) {
-    return interaction.reply({ embeds: [errorEmbed('Invalid Discord ID.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Invalid Discord ID.')], flags: MessageFlags.Ephemeral });
   }
   const res = await prisma.scrimsBan.updateMany({ where: { discordId, active: true }, data: { active: false } });
   await audit('SCRIMS_UNBAN', interaction.user.id, `${discordId} — ${res.count} ban(s) lifted`);
   return interaction.reply({
     embeds: [successEmbed(res.count ? `<@${discordId}> unbanned (${res.count}).` : `<@${discordId}> had no active bans.`)],
-    ephemeral: true,
+    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -490,7 +489,7 @@ async function handleBanList(interaction) {
         : 'No active bans.'
     )
     .setFooter({ text: FOOTER });
-  return interaction.reply({ embeds: [embed], ephemeral: true });
+  return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
 }
 
 async function handleDeleteTeamModal(interaction) {
@@ -499,7 +498,7 @@ async function handleDeleteTeamModal(interaction) {
     .findFirst({ where: { tag }, include: { owner: true } })
     .catch(() => null);
   if (!team) {
-    return interaction.reply({ embeds: [errorEmbed(`Team with tag \`${tag}\` not found.`)], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed(`Team with tag \`${tag}\` not found.`)], flags: MessageFlags.Ephemeral });
   }
   const ownerDiscordId = team.owner?.discordId || null;
 
@@ -553,7 +552,7 @@ async function handleDeleteTeamModal(interaction) {
   await audit('SCRIMS_DELTEAM', interaction.user.id, `${team.name} [${team.tag}] — ${registrations.length} regs, ${slots.length} slots backed up`);
   return interaction.reply({
     embeds: [successEmbed(`**${team.name}** [\`${team.tag}\`] scrims data deleted and backed up (${registrations.length} registrations, ${slots.length} slots). Target Team row untouched.`)],
-    ephemeral: true,
+    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -564,7 +563,7 @@ async function handleRestoreTeamMenu(interaction) {
     take: 25,
   });
   if (!backups.length) {
-    return interaction.reply({ embeds: [errorEmbed('No unrestored team backups found.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('No unrestored team backups found.')], flags: MessageFlags.Ephemeral });
   }
   const select = new StringSelectMenuBuilder()
     .setCustomId('bs:admin:restoreteam:select')
@@ -580,7 +579,7 @@ async function handleRestoreTeamMenu(interaction) {
   return interaction.reply({
     content: '♻️ **Restore a deleted team** — pick a backup:',
     components: [new ActionRowBuilder().addComponents(select)],
-    ephemeral: true,
+    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -590,7 +589,7 @@ async function handleRestoreSelect(interaction) {
     const backupId = interaction.values[0];
     const backup = await prisma.deletedTeamBackup.findUnique({ where: { id: backupId } });
     if (!backup || backup.restored) {
-      return interaction.reply({ embeds: [errorEmbed('Backup not found or already restored.')], ephemeral: true });
+      return interaction.reply({ embeds: [errorEmbed('Backup not found or already restored.')], flags: MessageFlags.Ephemeral });
     }
     const data = JSON.parse(backup.backupJson);
     const teamId = data.teamDbId;
@@ -657,11 +656,11 @@ async function handleRestoreSelect(interaction) {
     await audit('SCRIMS_RESTORETEAM', interaction.user.id, `${data.teamName} [${data.teamTag}] restored`);
     return interaction.reply({
       embeds: [successEmbed(`**${data.teamName}** [\`${data.teamTag}\`] restored (${data.registrations?.length || 0} registrations, ${data.slots?.length || 0} slots).`)],
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
   } catch (err) {
     console.error('[scrimadmin] restore select failed:', err.message);
-    return interaction.reply({ embeds: [errorEmbed('Restore failed.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Restore failed.')], flags: MessageFlags.Ephemeral });
   }
 }
 
@@ -686,12 +685,12 @@ async function handleTemplateList(interaction) {
         .setStyle(ButtonStyle.Primary)
     )
   );
-  return interaction.reply({ embeds: [embed], components: [editRow], ephemeral: true });
+  return interaction.reply({ embeds: [embed], components: [editRow], flags: MessageFlags.Ephemeral });
 }
 
 async function showTemplateSetModal(interaction, tname) {
   if (!TEMPLATE_NAMES.includes(tname)) {
-    return interaction.reply({ embeds: [errorEmbed(`Unknown template \`${tname}\`.`)], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed(`Unknown template \`${tname}\`.`)], flags: MessageFlags.Ephemeral });
   }
   const current = (await tpl.getMessageTemplate(tname)) || '';
   return interaction.showModal(
@@ -703,12 +702,12 @@ async function showTemplateSetModal(interaction, tname) {
 
 async function handleTemplateSetModal(interaction, tname) {
   if (!TEMPLATE_NAMES.includes(tname)) {
-    return interaction.reply({ embeds: [errorEmbed(`Unknown template \`${tname}\`.`)], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed(`Unknown template \`${tname}\`.`)], flags: MessageFlags.Ephemeral });
   }
   const content = interaction.fields.getTextInputValue('content');
   await tpl.setMessageTemplate(tname, content);
   await audit('TEMPLATE_SET', interaction.user.id, tname);
-  return interaction.reply({ embeds: [successEmbed(`Template \`${tname}\` updated.`)], ephemeral: true });
+  return interaction.reply({ embeds: [successEmbed(`Template \`${tname}\` updated.`)], flags: MessageFlags.Ephemeral });
 }
 
 // ---------------------------------------------------------------- lobby
@@ -796,7 +795,7 @@ async function handle(interaction) {
   } catch (err) {
     console.error('[scrimadmin] handle failed:', err.message);
     try {
-      const payload = { embeds: [errorEmbed('Something went wrong.')], ephemeral: true };
+      const payload = { embeds: [errorEmbed('Something went wrong.')], flags: MessageFlags.Ephemeral };
       if (interaction.replied || interaction.deferred) await interaction.followUp(payload);
       else await interaction.reply(payload);
     } catch {

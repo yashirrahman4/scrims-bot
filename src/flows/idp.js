@@ -10,8 +10,7 @@ const {
   RoleSelectMenuBuilder,
   ChannelType,
   EmbedBuilder,
-  PermissionFlagsBits,
-} = require('discord.js');
+  PermissionFlagsBits, MessageFlags} = require('discord.js');
 const { prisma } = require('../db');
 const {
   getSettings,
@@ -53,7 +52,7 @@ async function handle(interaction) {
       if (interaction.deferred) {
         await interaction.editReply({ content: null, embeds: [errorEmbed('Something went wrong. Please try again.')], components: [] });
       } else if (!interaction.replied) {
-        await interaction.reply({ embeds: [errorEmbed('Something went wrong. Please try again.')], ephemeral: true });
+        await interaction.reply({ embeds: [errorEmbed('Something went wrong. Please try again.')], flags: MessageFlags.Ephemeral });
       }
     } catch {}
   }
@@ -375,7 +374,7 @@ async function handleButton(interaction) {
   const gid = parts[2];
 
   if (action === 'edit') {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const group = await getGroup(gid);
     if (!group) return interaction.editReply({ content: 'Group not found.', embeds: [], components: [] });
     const select = new StringSelectMenuBuilder()
@@ -416,7 +415,7 @@ async function handleButton(interaction) {
   }
 
   if (action === 'slotlist') {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const group = await getGroup(gid);
     if (!group) return interaction.editReply({ content: 'Group not found.', embeds: [], components: [] });
     const ok = await postSlotList(interaction.client, interaction.guild, group);
@@ -427,7 +426,7 @@ async function handleButton(interaction) {
   }
 
   if (action === 'qualify') {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const group = await getGroup(gid);
     if (!group) return interaction.editReply({ content: 'Group not found.', embeds: [], components: [] });
     const regs = await groupRegs(group);
@@ -446,7 +445,7 @@ async function handleButton(interaction) {
   }
 
   if (action === 'punish') {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const group = await getGroup(gid);
     if (!group) return interaction.editReply({ content: 'Group not found.', embeds: [], components: [] });
     const regs = await groupRegs(group);
@@ -558,7 +557,7 @@ async function handleSelect(interaction) {
   if (id.startsWith('idp:etimes:')) {
     const matchId = id.split(':')[2];
     const match = await prisma.idpMatch.findUnique({ where: { id: matchId } });
-    if (!match) return interaction.reply({ embeds: [errorEmbed('Match not found.')], ephemeral: true });
+    if (!match) return interaction.reply({ embeds: [errorEmbed('Match not found.')], flags: MessageFlags.Ephemeral });
     // showModal must be the first acknowledge — no defer allowed here.
     const modal = new ModalBuilder().setCustomId(`idp:ematch:modal:${match.id}`).setTitle(`Match ${match.matchNo} Times`);
     const mk = (cid, label, value, ph) =>
@@ -572,7 +571,7 @@ async function handleSelect(interaction) {
   if (id.startsWith('idp:qrole:')) {
     const gid = id.split(':')[2];
     const roleId = (interaction.values || [])[0];
-    if (!roleId) return interaction.reply({ content: 'No role selected.', ephemeral: true });
+    if (!roleId) return interaction.reply({ content: 'No role selected.', flags: MessageFlags.Ephemeral });
     await interaction.deferUpdate();
     const group = await getGroup(gid);
     if (!group) return interaction.editReply({ content: 'Group not found.', embeds: [], components: [] });
@@ -697,7 +696,7 @@ async function handleModal(interaction) {
 
   if (id.startsWith('idp:ematch:modal:')) {
     const matchId = id.split(':')[3];
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const match = await prisma.idpMatch.findUnique({ where: { id: matchId } });
     if (!match) return interaction.editReply({ embeds: [errorEmbed('Match not found.')] });
     const idpAt = interaction.fields.getTextInputValue('m_idpat').trim() || null;
@@ -711,7 +710,7 @@ async function handleModal(interaction) {
 
   if (id.startsWith('idp:edate:modal:')) {
     const gid = id.split(':')[3];
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const raw = interaction.fields.getTextInputValue('d_date').trim();
     let matchesDate = null;
     if (raw) {
@@ -728,7 +727,7 @@ async function handleModal(interaction) {
 
   if (id.startsWith('idp:remind:modal:')) {
     const gid = id.split(':')[3];
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const group = await getGroup(gid);
     if (!group) return interaction.editReply({ embeds: [errorEmbed('Group not found.')] });
     const title = interaction.fields.getTextInputValue('r_title').trim();

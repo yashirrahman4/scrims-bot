@@ -4,8 +4,7 @@ const {
   ButtonStyle,
   StringSelectMenuBuilder,
   UserSelectMenuBuilder,
-  EmbedBuilder,
-} = require('discord.js');
+  EmbedBuilder, MessageFlags} = require('discord.js');
 const { prisma } = require('../db');
 const {
   getOrCreateUser,
@@ -29,7 +28,7 @@ async function handle(interaction) {
       if (interaction.deferred) {
         await interaction.editReply({ content: null, embeds: [errorEmbed('Something went wrong. Please try again.')], components: [] });
       } else if (!interaction.replied) {
-        await interaction.reply({ embeds: [errorEmbed('Something went wrong. Please try again.')], ephemeral: true });
+        await interaction.reply({ embeds: [errorEmbed('Something went wrong. Please try again.')], flags: MessageFlags.Ephemeral });
       }
     } catch {}
   }
@@ -220,12 +219,12 @@ async function askForTags(interaction, eventId, useUpdate) {
   if (!event || event.status !== 'OPEN') {
     const p = { content: `Registration for **${event?.name || 'this event'}** is not open yet.`, embeds: [], components: [] };
     if (interaction.deferred) return interaction.editReply(p);
-    return interaction.reply({ ...p, ephemeral: true });
+    return interaction.reply({ ...p, flags: MessageFlags.Ephemeral });
   }
   if (regNotStarted(event)) {
     const p = { embeds: [errorEmbed(regStartsInMessage(event))], components: [] };
     if (interaction.deferred) return interaction.editReply(p);
-    return interaction.reply({ ...p, ephemeral: true });
+    return interaction.reply({ ...p, flags: MessageFlags.Ephemeral });
   }
   const dbUser = await getOrCreateUser(interaction.user);
   const team = await getOwnedTeam(dbUser.id);
@@ -233,7 +232,7 @@ async function askForTags(interaction, eventId, useUpdate) {
   if (problem) {
     const p = { embeds: [errorEmbed(problem)], components: [] };
     if (interaction.deferred) return interaction.editReply(p);
-    return interaction.reply({ ...p, ephemeral: true });
+    return interaction.reply({ ...p, flags: MessageFlags.Ephemeral });
   }
   const tags = event.tagsRequired ?? 4;
   if (tags === 0) {
@@ -254,7 +253,7 @@ async function askForTags(interaction, eventId, useUpdate) {
     components: [row],
   };
   if (interaction.deferred) return interaction.editReply(payload);
-  return useUpdate ? interaction.update(payload) : interaction.reply({ ...payload, ephemeral: true });
+  return useUpdate ? interaction.update(payload) : interaction.reply({ ...payload, flags: MessageFlags.Ephemeral });
 }
 
 /** Finalize a registration (shared by the tag-picker submit and the no-tags direct path). */
@@ -396,7 +395,7 @@ function eventCardEmbed(event, taken) {
 
 async function openEventPicker(interaction, type) {
   // Acknowledge FIRST — the queries below can take a while on a remote DB.
-  await interaction.deferReply({ ephemeral: true });
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   const events = await prisma.tournament.findMany({
     where: {
       type,
@@ -471,7 +470,7 @@ async function showEventDetail(interaction, eventId) {
 
 /** Direct registration from the announcement post's Register button — leader tags teammates first. */
 async function registerFromPost(interaction, eventId) {
-  await interaction.deferReply({ ephemeral: true });
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   return askForTags(interaction, eventId, false);
 }
 
@@ -480,7 +479,7 @@ async function registerFromPost(interaction, eventId) {
 const statusEmoji = { PENDING: '⏳', APPROVED: '✅', DISQUALIFIED: '⛔', REMOVED: '—' };
 
 async function listMyRegs(interaction, type) {
-  await interaction.deferReply({ ephemeral: true });
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   const dbUser = await getOrCreateUser(interaction.user);
   const team = await getOwnedTeam(dbUser.id);
   if (!team) return interaction.editReply({ embeds: [errorEmbed('You do not own a team.')] });
@@ -502,7 +501,7 @@ async function listMyRegs(interaction, type) {
 }
 
 async function openUnregisterPicker(interaction, type) {
-  await interaction.deferReply({ ephemeral: true });
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   const dbUser = await getOrCreateUser(interaction.user);
   const team = await getOwnedTeam(dbUser.id);
   if (!team) return interaction.editReply({ embeds: [errorEmbed('You do not own a team.')] });

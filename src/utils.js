@@ -1,4 +1,4 @@
-const { EmbedBuilder, PermissionFlagsBits } = require('discord.js');
+const { EmbedBuilder, PermissionFlagsBits, MessageFlags} = require('discord.js');
 const { prisma } = require('./db');
 const config = require('./config');
 
@@ -32,12 +32,12 @@ async function isAdmin(interaction) {
   return member.roles.cache.some((role) => settings.adminRoleIds.includes(role.id));
 }
 
-/** Replies with an error embed and returns false when the user is not an admin. */
+/** Replies with an error embed and returns false when the user is not an admin. Never throws. */
 async function requireAdmin(interaction) {
   if (!(await isAdmin(interaction))) {
-    const reply = { embeds: [errorEmbed('Only admins can use this.')], ephemeral: true };
-    if (interaction.replied || interaction.deferred) await interaction.followUp(reply);
-    else await interaction.reply(reply);
+    const reply = { embeds: [errorEmbed('Only admins can use this.')], flags: MessageFlags.Ephemeral };
+    if (interaction.replied || interaction.deferred) await interaction.followUp(reply).catch(() => {});
+    else await interaction.reply(reply).catch(() => {});
     return false;
   }
   return true;

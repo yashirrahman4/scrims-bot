@@ -7,8 +7,7 @@ const {
   TextInputStyle,
   StringSelectMenuBuilder,
   UserSelectMenuBuilder,
-  EmbedBuilder,
-} = require('discord.js');
+  EmbedBuilder, MessageFlags} = require('discord.js');
 const { prisma } = require('../db');
 const {
   getSettings,
@@ -55,7 +54,7 @@ async function handle(interaction) {
       if (interaction.deferred) {
         await interaction.editReply({ content: null, embeds: [errorEmbed('Something went wrong. Please try again.')], components: [] });
       } else if (!interaction.replied) {
-        await interaction.reply({ embeds: [errorEmbed('Something went wrong. Please try again.')], ephemeral: true });
+        await interaction.reply({ embeds: [errorEmbed('Something went wrong. Please try again.')], flags: MessageFlags.Ephemeral });
       }
     } catch {}
   }
@@ -86,7 +85,7 @@ function wizSelectPayload(draft, settings) {
     .setPlaceholder('Select team players')
     .setMinValues(Math.min(settings.teamSize, 25))
     .setMaxValues(Math.min(maxPlayers, 25));
-  return { embeds: [embed], components: [new ActionRowBuilder().addComponents(select)], ephemeral: true };
+  return { embeds: [embed], components: [new ActionRowBuilder().addComponents(select)], flags: MessageFlags.Ephemeral };
 }
 
 /** Step 3: per-player IGN/UID details board. */
@@ -133,7 +132,7 @@ function wizDetailsPayload(draft, settings) {
       new ButtonBuilder().setCustomId('team:wiz:submit').setLabel('Submit').setStyle(ButtonStyle.Success).setDisabled(!allSet)
     )
   );
-  return { embeds: [embed], components: rows, ephemeral: true };
+  return { embeds: [embed], components: rows, flags: MessageFlags.Ephemeral };
 }
 
 function wizStep1Modal(draft) {
@@ -256,14 +255,14 @@ async function handleButton(interaction) {
     if (existing) {
       return interaction.reply({
         embeds: [errorEmbed(`You already own a team (**${existing.tag}**). One team per owner.`)],
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
     }
     return interaction.showModal(wizStep1Modal(null));
   }
 
   if (id === 'team:my') {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const dbUser = await getOrCreateUser(interaction.user);
     const { team, relation } = await getAnyTeamFor(interaction.user.id, dbUser.id);
     if (!team) return interaction.editReply({ embeds: [errorEmbed('You are not on any team yet. Register one to get started.')] });
@@ -271,7 +270,7 @@ async function handleButton(interaction) {
   }
 
   if (id === 'team:leave') {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const dbUser = await getOrCreateUser(interaction.user);
     const { team, relation } = await getAnyTeamFor(interaction.user.id, dbUser.id);
     if (!team) return interaction.editReply({ embeds: [errorEmbed('You are not on any team.')] });
@@ -307,7 +306,7 @@ async function handleButton(interaction) {
   }
 
   if (id === 'team:manage') {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const dbUser = await getOrCreateUser(interaction.user);
     const team = await getOwnedTeam(dbUser.id);
     if (!team) return interaction.editReply({ embeds: [errorEmbed('You do not own a team. Register one first.')] });
@@ -326,10 +325,10 @@ async function handleButton(interaction) {
 
   if (id.startsWith('team:wiz:set:')) {
     const draft = getDraft(interaction.user.id);
-    if (!draft) return interaction.reply({ embeds: [errorEmbed('Session expired. Start again with Register Team.')], ephemeral: true });
+    if (!draft) return interaction.reply({ embeds: [errorEmbed('Session expired. Start again with Register Team.')], flags: MessageFlags.Ephemeral });
     const discordId = id.split(':')[3];
     if (!draft.playerIds.includes(discordId)) {
-      return interaction.reply({ embeds: [errorEmbed('This player is not in your selection. Use Add/Remove Players first.')], ephemeral: true });
+      return interaction.reply({ embeds: [errorEmbed('This player is not in your selection. Use Add/Remove Players first.')], flags: MessageFlags.Ephemeral });
     }
     const modal = new ModalBuilder().setCustomId(`team:wiz:playermodal:${discordId}`).setTitle('Player Details');
     const d = draft.details[discordId] || {};
@@ -346,7 +345,7 @@ async function handleButton(interaction) {
 
   if (id === 'team:wiz:editplayers') {
     const draft = getDraft(interaction.user.id);
-    if (!draft) return interaction.reply({ embeds: [errorEmbed('Session expired. Start again with Register Team.')], ephemeral: true });
+    if (!draft) return interaction.reply({ embeds: [errorEmbed('Session expired. Start again with Register Team.')], flags: MessageFlags.Ephemeral });
     await interaction.deferUpdate();
     const settings = await getSettings(interaction.guildId);
     return interaction.editReply(wizSelectPayload(draft, settings));
@@ -354,7 +353,7 @@ async function handleButton(interaction) {
 
   if (id === 'team:wiz:back') {
     const draft = getDraft(interaction.user.id);
-    if (!draft) return interaction.reply({ embeds: [errorEmbed('Session expired. Start again with Register Team.')], ephemeral: true });
+    if (!draft) return interaction.reply({ embeds: [errorEmbed('Session expired. Start again with Register Team.')], flags: MessageFlags.Ephemeral });
     return interaction.showModal(wizStep1Modal(draft));
   }
 
@@ -365,13 +364,13 @@ async function handleButton(interaction) {
 
   if (id === 'team:wiz:submit') {
     const draft = getDraft(interaction.user.id);
-    if (!draft) return interaction.reply({ embeds: [errorEmbed('Session expired. Start again with Register Team.')], ephemeral: true });
+    if (!draft) return interaction.reply({ embeds: [errorEmbed('Session expired. Start again with Register Team.')], flags: MessageFlags.Ephemeral });
     const settings = await getSettings(interaction.guildId);
     const missing = draft.playerIds.filter((pid) => !draft.details[pid]);
     if (draft.playerIds.length < settings.teamSize || missing.length) {
       return interaction.reply({
         embeds: [errorEmbed(`Set IGN + UID for every player (need at least ${settings.teamSize} players with details).`)],
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
     }
     await interaction.deferUpdate();
@@ -458,7 +457,7 @@ async function handleButton(interaction) {
   if (id === 'team:edit') {
     const dbUser = await getOrCreateUser(interaction.user);
     const team = await getOwnedTeam(dbUser.id);
-    if (!team) return interaction.reply({ embeds: [errorEmbed('You do not own a team.')], ephemeral: true });
+    if (!team) return interaction.reply({ embeds: [errorEmbed('You do not own a team.')], flags: MessageFlags.Ephemeral });
     const modal = new ModalBuilder().setCustomId('team:edit:modal').setTitle('Edit Team Info');
     const mk = (cid, label, value, max) =>
       new ActionRowBuilder().addComponents(
@@ -477,12 +476,12 @@ async function handleButton(interaction) {
   if (id === 'team:manage:add:starter' || id === 'team:manage:add:sub') {
     const dbUser = await getOrCreateUser(interaction.user);
     const team = await getOwnedTeam(dbUser.id);
-    if (!team) return interaction.reply({ embeds: [errorEmbed('You do not own a team.')], ephemeral: true });
+    if (!team) return interaction.reply({ embeds: [errorEmbed('You do not own a team.')], flags: MessageFlags.Ephemeral });
     const settings = await getSettings(interaction.guildId);
     const kind = id.endsWith('starter') ? 'starter' : 'sub';
     const count = team.members.filter((m) => m.role === (kind === 'starter' ? 'PLAYER' : 'SUB')).length;
     const limit = kind === 'starter' ? settings.teamSize : settings.maxSubs;
-    if (count >= limit) return interaction.reply({ embeds: [errorEmbed(`No free ${kind} slots (limit ${limit}).`)], ephemeral: true });
+    if (count >= limit) return interaction.reply({ embeds: [errorEmbed(`No free ${kind} slots (limit ${limit}).`)], flags: MessageFlags.Ephemeral });
     const modal = await playerModal(kind);
     modal.setCustomId(`team:playeradd:modal:${kind}:${team.id}`);
     modal.setTitle(kind === 'starter' ? 'Add Starter to Team' : 'Add Substitute to Team');
@@ -492,8 +491,8 @@ async function handleButton(interaction) {
   if (id === 'team:manage:remove') {
     const dbUser = await getOrCreateUser(interaction.user);
     const team = await getOwnedTeam(dbUser.id);
-    if (!team) return interaction.reply({ embeds: [errorEmbed('You do not own a team.')], ephemeral: true });
-    if (!team.members.length) return interaction.reply({ embeds: [errorEmbed('No players to remove.')], ephemeral: true });
+    if (!team) return interaction.reply({ embeds: [errorEmbed('You do not own a team.')], flags: MessageFlags.Ephemeral });
+    if (!team.members.length) return interaction.reply({ embeds: [errorEmbed('No players to remove.')], flags: MessageFlags.Ephemeral });
     const select = new StringSelectMenuBuilder()
       .setCustomId(`team:remove:select:${team.id}`)
       .setPlaceholder('Select a player to remove')
@@ -507,15 +506,15 @@ async function handleButton(interaction) {
     return interaction.reply({
       content: 'Select a player to remove from the team:',
       components: [new ActionRowBuilder().addComponents(select)],
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
   }
 
   if (id === 'team:role:sync') {
     const dbUser = await getOrCreateUser(interaction.user);
     const team = await getOwnedTeam(dbUser.id);
-    if (!team) return interaction.reply({ embeds: [errorEmbed('You do not own a team.')], ephemeral: true });
-    await interaction.deferReply({ ephemeral: true });
+    if (!team) return interaction.reply({ embeds: [errorEmbed('You do not own a team.')], flags: MessageFlags.Ephemeral });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const discordIds = [team.owner.discordId, ...team.members.map((m) => m.player.discordId)];
     await ensureTeamRole(interaction.guild, team, discordIds);
     await interaction.editReply({ embeds: [successEmbed('Team role synced to all roster members.')] });
@@ -530,7 +529,7 @@ async function handleButton(interaction) {
     return interaction.reply({
       embeds: [new EmbedBuilder().setColor(0xed4245).setDescription('⚠️ Disband your team? This removes the roster and the team role. This cannot be undone.')],
       components: [row],
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
   }
 
@@ -568,7 +567,7 @@ async function handleModal(interaction) {
   const id = interaction.customId;
 
   if (id === 'team:wiz:modal1') {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const name = interaction.fields.getTextInputValue('t_name').trim();
     const tag = interaction.fields.getTextInputValue('t_tag').trim().toUpperCase();
     const email = interaction.fields.getTextInputValue('t_email').trim();
@@ -607,9 +606,9 @@ async function handleModal(interaction) {
   if (id.startsWith('team:wiz:playermodal:')) {
     const discordId = id.split(':')[3];
     const draft = getDraft(interaction.user.id);
-    if (!draft) return interaction.reply({ embeds: [errorEmbed('Session expired. Start again with Register Team.')], ephemeral: true });
+    if (!draft) return interaction.reply({ embeds: [errorEmbed('Session expired. Start again with Register Team.')], flags: MessageFlags.Ephemeral });
     if (!draft.playerIds.includes(discordId)) {
-      return interaction.reply({ embeds: [errorEmbed('This player is not in your selection.')], ephemeral: true });
+      return interaction.reply({ embeds: [errorEmbed('This player is not in your selection.')], flags: MessageFlags.Ephemeral });
     }
     await interaction.deferUpdate();
     const existingList = draft.playerIds
@@ -628,7 +627,7 @@ async function handleModal(interaction) {
   }
 
   if (id === 'team:edit:modal') {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const dbUser = await getOrCreateUser(interaction.user);
     const team = await getOwnedTeam(dbUser.id);
     if (!team) return interaction.editReply({ embeds: [errorEmbed('You do not own a team.')] });
@@ -655,7 +654,7 @@ async function handleModal(interaction) {
 
   if (id.startsWith('team:playeradd:modal:')) {
     const [, , , kind, teamId] = id.split(':');
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const dbUser = await getOrCreateUser(interaction.user);
     const team = await getOwnedTeam(dbUser.id);
     if (!team || team.id !== teamId) return interaction.editReply({ embeds: [errorEmbed('You do not own this team.')] });
@@ -692,7 +691,7 @@ async function handleUserSelect(interaction) {
   const id = interaction.customId;
   if (id === 'team:wiz:players') {
     const draft = getDraft(interaction.user.id);
-    if (!draft) return interaction.reply({ embeds: [errorEmbed('Session expired. Start again with Register Team.')], ephemeral: true });
+    if (!draft) return interaction.reply({ embeds: [errorEmbed('Session expired. Start again with Register Team.')], flags: MessageFlags.Ephemeral });
     await interaction.deferUpdate();
     const settings = await getSettings(interaction.guildId);
     const ids = [...new Set(interaction.values)];

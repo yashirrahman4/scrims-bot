@@ -16,8 +16,7 @@ const {
   StringSelectMenuBuilder,
   UserSelectMenuBuilder,
   ChannelType,
-  EmbedBuilder,
-} = require('discord.js');
+  EmbedBuilder, MessageFlags} = require('discord.js');
 const { prisma } = require('../db');
 const { requireAdmin, errorEmbed, successEmbed, audit, postAdminLog } = require('../utils');
 const { refreshAnnouncementPanel } = require('./events');
@@ -282,7 +281,7 @@ async function handle(interaction) {
       if (interaction.deferred) {
         await interaction.editReply({ content: null, embeds: [errorEmbed('Something went wrong. Please try again.')], components: [] });
       } else if (!interaction.replied) {
-        await interaction.reply({ embeds: [errorEmbed('Something went wrong. Please try again.')], ephemeral: true });
+        await interaction.reply({ embeds: [errorEmbed('Something went wrong. Please try again.')], flags: MessageFlags.Ephemeral });
       }
     } catch {}
   }
@@ -301,7 +300,7 @@ async function handleButton(interaction) {
   const tid = parts[2];
 
   if (action === 'cancelmy' && parts.length === 3) {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const event = await getEvent(tid);
     if (!event) return interaction.editReply({ embeds: [errorEmbed('Tournament not found.')] });
     const found = await myTeamReg(tid, interaction.user.id);
@@ -350,7 +349,7 @@ async function handleButton(interaction) {
   }
 
   if (action === 'mygroups') {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const event = await getEvent(tid);
     if (!event) return interaction.editReply({ embeds: [errorEmbed('Tournament not found.')] });
     const found = await myTeamReg(tid, interaction.user.id);
@@ -371,9 +370,9 @@ async function handleButton(interaction) {
 
   if (action === 'changename') {
     const event = await getEvent(tid);
-    if (!event) return interaction.reply({ embeds: [errorEmbed('Tournament not found.')], ephemeral: true });
+    if (!event) return interaction.reply({ embeds: [errorEmbed('Tournament not found.')], flags: MessageFlags.Ephemeral });
     const found = await myTeamReg(tid, interaction.user.id);
-    if (!found) return interaction.reply({ embeds: [errorEmbed('You have no active slot in this tournament.')], ephemeral: true });
+    if (!found) return interaction.reply({ embeds: [errorEmbed('You have no active slot in this tournament.')], flags: MessageFlags.Ephemeral });
     const modal = new ModalBuilder().setCustomId(`slot:changename:modal:${found.team.id}`).setTitle('Change Team Name');
     modal.addComponents(
       new ActionRowBuilder().addComponents(
@@ -415,9 +414,9 @@ async function handleButton(interaction) {
     const token = id.split(':')[3];
     const pending = takePendingSwap(token);
     if (!pending?.secondRegId) {
-      return interaction.reply({ embeds: [errorEmbed('This swap expired. Start again with Swap Groups.')], ephemeral: true });
+      return interaction.reply({ embeds: [errorEmbed('This swap expired. Start again with Swap Groups.')], flags: MessageFlags.Ephemeral });
     }
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const regs = await prisma.tournamentRegistration.findMany({
       where: { id: { in: [pending.firstRegId, pending.secondRegId] } },
       include: { team: true, tournament: true },
@@ -508,7 +507,7 @@ async function handleButton(interaction) {
 
   if (action === 'transfer') {
     if (!(await requireAdmin(interaction))) return;
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const groups = await prisma.idpGroup.findMany({ where: { tournamentId: tid }, orderBy: { groupNo: 'asc' } });
     if (!groups.length) return interaction.editReply({ embeds: [errorEmbed('No IDP groups exist for this tournament yet.')] });
     const select = new StringSelectMenuBuilder()
@@ -586,7 +585,7 @@ async function handleModal(interaction) {
 
   if (id.startsWith('slot:changename:modal:')) {
     const teamId = id.split(':')[3];
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const raw = interaction.fields.getTextInputValue('t_name').trim().replace(/\s+/g, ' ');
     if (raw.length < 3 || raw.length > 40) return interaction.editReply({ embeds: [errorEmbed('Team name must be 3–40 characters.')] });
     const team = await prisma.team.findUnique({ where: { id: teamId }, include: { registrations: { include: { tournament: true } } } });
@@ -608,7 +607,7 @@ async function handleModal(interaction) {
     const raw = interaction.fields.getTextInputValue('t_ref');
     const first = await findActiveReg(tid, raw);
     if (!first) {
-      return interaction.reply({ embeds: [errorEmbed(`No active slot found for "${raw}". Try the team tag or slot number.`)], ephemeral: true });
+      return interaction.reply({ embeds: [errorEmbed(`No active slot found for "${raw}". Try the team tag or slot number.`)], flags: MessageFlags.Ephemeral });
     }
     const token = stashPendingSwap({ tid, firstRegId: first.id });
     const modal = new ModalBuilder().setCustomId(`slot:swap:second:${token}`).setTitle('Swap Groups — Team 2');
@@ -631,15 +630,15 @@ async function handleModal(interaction) {
     const token = id.split(':')[3];
     const pending = pendingSwap.get(token);
     if (!pending) {
-      return interaction.reply({ embeds: [errorEmbed('This swap expired. Start again with Swap Groups.')], ephemeral: true });
+      return interaction.reply({ embeds: [errorEmbed('This swap expired. Start again with Swap Groups.')], flags: MessageFlags.Ephemeral });
     }
     const raw = interaction.fields.getTextInputValue('t_ref');
     const second = await findActiveReg(pending.tid, raw);
     if (!second) {
-      return interaction.reply({ embeds: [errorEmbed(`No active slot found for "${raw}". Try the team tag or slot number.`)], ephemeral: true });
+      return interaction.reply({ embeds: [errorEmbed(`No active slot found for "${raw}". Try the team tag or slot number.`)], flags: MessageFlags.Ephemeral });
     }
     if (second.id === pending.firstRegId) {
-      return interaction.reply({ embeds: [errorEmbed('Pick a different team — you selected the same team twice.')], ephemeral: true });
+      return interaction.reply({ embeds: [errorEmbed('Pick a different team — you selected the same team twice.')], flags: MessageFlags.Ephemeral });
     }
     const first = await prisma.tournamentRegistration.findUnique({
       where: { id: pending.firstRegId },
@@ -647,7 +646,7 @@ async function handleModal(interaction) {
     });
     if (!first || !ACTIVE_REG.includes(first.status)) {
       takePendingSwap(token);
-      return interaction.reply({ embeds: [errorEmbed('The first team no longer has an active slot. Start over.')], ephemeral: true });
+      return interaction.reply({ embeds: [errorEmbed('The first team no longer has an active slot. Start over.')], flags: MessageFlags.Ephemeral });
     }
     pending.secondRegId = second.id;
     const row = new ActionRowBuilder().addComponents(
@@ -656,7 +655,7 @@ async function handleModal(interaction) {
     );
     const sameGroup = first.groupNo === second.groupNo;
     return interaction.reply({
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
       embeds: [
         new EmbedBuilder()
           .setColor(0xfaa81a)
@@ -676,7 +675,7 @@ async function handleModal(interaction) {
   if (id.startsWith('slot:acancel:modal:')) {
     if (!(await requireAdmin(interaction))) return;
     const tid = id.split(':')[3];
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const raw = interaction.fields.getTextInputValue('c_who').trim();
     const event = await getEvent(tid);
     if (!event) return interaction.editReply({ embeds: [errorEmbed('Tournament not found.')] });
