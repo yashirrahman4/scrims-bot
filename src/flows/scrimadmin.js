@@ -14,7 +14,7 @@ const {
   AttachmentBuilder,
 } = require('discord.js');
 const { prisma } = require('../db');
-const { requireAdmin, errorEmbed, successEmbed, formatIST, audit, extractDiscordId, sendLogEmbed } = require('../utils');
+const { requireAdmin, errorEmbed, successEmbed, formatIST, audit, extractDiscordId, sendLogEmbed, safeReply } = require('../utils');
 const tpl = require('../services/scrimmsgtemplate');
 const { buildLobbyEmbed, FOOTER } = require('../scrimpanels');
 
@@ -81,28 +81,29 @@ async function handleMessageTemplateCmd(interaction) {
             : 'No templates found.'
         )
         .setFooter({ text: FOOTER });
-      return interaction.reply({ embeds: [embed], ephemeral: true });
+      // Deferred-safe: the router defers /message_template before we get here.
+      return safeReply(interaction, { embeds: [embed], ephemeral: true });
     }
     // set
     const tname = interaction.options.getString('name', true);
     const content = interaction.options.getString('content', true);
     if (!TEMPLATE_NAMES.includes(tname)) {
-      return interaction.reply({ embeds: [errorEmbed(`Unknown template \`${tname}\`.`)], ephemeral: true });
+      return safeReply(interaction, { embeds: [errorEmbed(`Unknown template \`${tname}\`.`)], ephemeral: true });
     }
     await tpl.setMessageTemplate(tname, content);
     await audit('TEMPLATE_SET', interaction.user.id, tname);
-    return interaction.reply({ embeds: [successEmbed(`Template \`${tname}\` updated.`)] , ephemeral: true });
+    return safeReply(interaction, { embeds: [successEmbed(`Template \`${tname}\` updated.`)] , ephemeral: true });
   } catch (err) {
     console.error('[scrimadmin] message_template failed:', err.message);
     const payload = { embeds: [errorEmbed('Failed to manage templates.')], ephemeral: true };
-    if (interaction.replied || interaction.deferred) return interaction.followUp(payload);
-    return interaction.reply(payload);
+    return safeReply(interaction, payload);
   }
 }
 
 async function handleBotHealth(interaction) {
   if (!(await requireAdmin(interaction))) return;
-  await interaction.deferReply({ ephemeral: true });
+  // Deferred-safe: the router defers /bot_health before we get here, so we
+  // never defer twice (the old second deferReply threw and killed the run).
   const checks = [];
   const client = interaction.client;
 
@@ -175,7 +176,7 @@ async function handleBotHealth(interaction) {
 
 async function handleExportScrim(interaction) {
   if (!(await requireAdmin(interaction))) return;
-  await interaction.deferReply({ ephemeral: true });
+  // Deferred-safe: the router defers /export scrim before we get here.
   try {
     const track = interaction.options.getString('track', true).toUpperCase();
 
@@ -332,6 +333,16 @@ async function handleModal(interaction) {
   }
 }
 
+/** Count players in a verification playersJson; '?' when corrupt. */
+function safePlayerCount(playersJson) {
+  try {
+    const arr = JSON.parse(playersJson || '[]');
+    return Array.isArray(arr) ? arr.length : '?';
+  } catch {
+    return '?';
+  }
+}
+
 async function handleLookupModal(interaction) {
   const query = interaction.fields.getTextInputValue('query').trim();
   const did = extractDiscordId(query);
@@ -388,7 +399,7 @@ async function handleLookupModal(interaction) {
     .addFields(
       {
         name: 'Verification',
-        value: `Owner: <@${ver.ownerDiscordId}> (${ver.ownerDiscordId})\nStatus: ${ver.status}\nVerified: ${formatIST(ver.verifiedAt || ver.createdAt)}\nPlayers: ${(JSON.parse(ver.playersJson || '[]')).length}`,
+        value: `Owner: <@${ver.ownerDiscordId}> (${ver.ownerDiscordId})\nStatus: ${ver.status}\nVerified: ${formatIST(ver.verifiedAt || ver.createdAt)}\nPlayers: ${safePlayerCount(ver.playersJson)}`,
       },
       {
         name: 'Target Team',
@@ -455,8 +466,13 @@ async function handleUnbanModal(interaction) {
 }
 
 async function handleBanList(interaction) {
+  // Sweep expired bans first so stale rows don't show as active.
+  await prisma.scrimsBan.updateMany({
+    where: { active: true, expiresAt: { lt: new Date() } },
+    data: { active: false },
+  }).catch(() => {});
   const bans = await prisma.scrimsBan.findMany({
-    where: { active: true },
+    where: { active: true, OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }] },
     orderBy: [{ expiresAt: 'asc' }],
     take: 25,
   });
@@ -514,12 +530,24 @@ async function handleDeleteTeamModal(interaction) {
   });
 
   // Delete the team's Scrim* rows only — the target Team itself is NOT touched.
+  // Slots are FREED (teamId cleared, status EMPTY), not deleted, so groups
+  // keep their 21 slots; restore re-fills the freed rows from the backup.
+  const freedGroupIds = [...new Set(slots.map((s) => s.groupId))];
   await prisma.scrimRegistration.deleteMany({ where: { teamId: team.id } });
-  await prisma.scrimSlot.deleteMany({ where: { teamId: team.id } });
+  await prisma.scrimSlot.updateMany({
+    where: { teamId: team.id },
+    data: { teamId: null, status: 'EMPTY' },
+  });
   await prisma.slotWarningCount.deleteMany({ where: { teamId: team.id } });
   await prisma.slotWarningLog.deleteMany({ where: { teamId: team.id } });
   if (ownerDiscordId) {
     await prisma.scrimsVerification.deleteMany({ where: { ownerDiscordId } }).catch(() => {});
+  }
+  // The freed slots may have vacancy subscribers.
+  for (const gid of freedGroupIds) {
+    try {
+      require('./scrimidp').notifyVacancy(gid, interaction.client).catch(() => {});
+    } catch {}
   }
 
   await audit('SCRIMS_DELTEAM', interaction.user.id, `${team.name} [${team.tag}] — ${registrations.length} regs, ${slots.length} slots backed up`);
@@ -649,7 +677,16 @@ async function handleTemplateList(interaction) {
         : 'No templates found.'
     )
     .setFooter({ text: FOOTER });
-  return interaction.reply({ embeds: [embed], ephemeral: true });
+  // Per-template Edit buttons (bs:tpl:set:<name>), so the list is actionable.
+  const editRow = new ActionRowBuilder().addComponents(
+    TEMPLATE_NAMES.slice(0, 5).map((tname) =>
+      new ButtonBuilder()
+        .setCustomId(`bs:tpl:set:${tname}`)
+        .setLabel(`Edit ${tname}`)
+        .setStyle(ButtonStyle.Primary)
+    )
+  );
+  return interaction.reply({ embeds: [embed], components: [editRow], ephemeral: true });
 }
 
 async function showTemplateSetModal(interaction, tname) {
@@ -717,7 +754,10 @@ async function postLobbyPanel(interaction, panelType = 'ALL') {
     ? String(panelType).toUpperCase()
     : 'ALL';
   const embed = await buildLobbyEmbed(type);
-  const msg = await interaction.channel.send({ embeds: [embed] });
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('bs:lobby:refresh').setLabel('Refresh').setStyle(ButtonStyle.Secondary).setEmoji('🔄')
+  );
+  const msg = await interaction.channel.send({ embeds: [embed], components: [row] });
   await prisma.liveLobbyPanel.create({
     data: {
       guildId: interaction.guildId,

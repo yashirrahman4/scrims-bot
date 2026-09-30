@@ -65,6 +65,9 @@ const selfHealTables = [
   )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS "ScrimGroup_channelId_key" ON "ScrimGroup"("channelId")`,
   `CREATE UNIQUE INDEX IF NOT EXISTS "ScrimGroup_groupType_groupNo_key" ON "ScrimGroup"("groupType", "groupNo")`,
+  // scrimport-3: DB-backed reminder flags (replace in-memory Sets in scrimidp).
+  `ALTER TABLE "ScrimGroup" ADD COLUMN IF NOT EXISTS "matchDayPingedAt" TIMESTAMP(3)`,
+  `ALTER TABLE "ScrimGroup" ADD COLUMN IF NOT EXISTS "resultSsRemindedAt" TIMESTAMP(3)`,
 
   // --- ScrimMatch ---
   `CREATE TABLE IF NOT EXISTS "ScrimMatch" (

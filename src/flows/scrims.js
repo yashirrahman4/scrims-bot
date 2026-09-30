@@ -559,13 +559,42 @@ async function onVerifyCancel(interaction) {
   const session = await getSession(userId, 'bs_verify');
   if (session) {
     await deleteSession(userId, 'bs_verify');
-  } else {
-    // No draft in progress — treat as discard of the saved profile so the user can redo.
-    await prisma.scrimsVerification.delete({ where: { ownerDiscordId: String(userId) } }).catch(() => {});
+    await audit('SCRIMS_VERIFY_CANCEL', userId, 'draft discarded');
+    await replyEph(interaction, {
+      embeds: [successEmbed('Discarded. Press **Register Team** on the panel to start over.')],
+    });
+    return;
   }
-  await audit('SCRIMS_VERIFY_CANCEL', userId, session ? 'draft discarded' : 'saved profile discarded');
+  // No draft in progress — discarding the SAVED profile is destructive, so confirm.
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('bs:verify:cancel:yes').setLabel('Yes, discard it').setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId('bs:verify:cancel:no').setLabel('Keep it').setStyle(ButtonStyle.Secondary)
+  );
+  await replyEph(interaction, {
+    embeds: [
+      new EmbedBuilder()
+        .setColor(0xf39c12)
+        .setTitle('⚠️ Discard saved verification profile?')
+        .setDescription('This permanently deletes your saved verification profile. You will need to verify again before registering.'),
+    ],
+    components: [row],
+  });
+}
+
+async function onVerifyCancelYes(interaction) {
+  const userId = interaction.user.id;
+  await prisma.scrimsVerification.delete({ where: { ownerDiscordId: String(userId) } }).catch(() => {});
+  await audit('SCRIMS_VERIFY_CANCEL', userId, 'saved profile discarded (confirmed)');
   await replyEph(interaction, {
     embeds: [successEmbed('Discarded. Press **Register Team** on the panel to start over.')],
+    components: [],
+  });
+}
+
+async function onVerifyCancelNo(interaction) {
+  await replyEph(interaction, {
+    embeds: [successEmbed('Kept your saved verification profile.')],
+    components: [],
   });
 }
 
@@ -792,7 +821,12 @@ async function onRegConfirm(interaction) {
       const dup = await tx.scrimRegistration.findFirst({ where: { teamId: team.id, groupId, status: 'ACTIVE' } });
       if (dup) throw new Error('DUP');
 
-      const free = lowestFreeSlot(group.slots);
+      // Row-lock the group's slots so concurrent confirms serialize: the
+      // second transaction blocks here until the first commits, then sees the
+      // taken slot (and the committed confirmation serial). Postgres-only.
+      await tx.$queryRaw`SELECT "id" FROM "ScrimSlot" WHERE "groupId" = ${groupId} FOR UPDATE`;
+      const lockedSlots = await tx.scrimSlot.findMany({ where: { groupId } });
+      const free = lowestFreeSlot(lockedSlots);
       if (!free) throw new Error('FULL');
 
       await tx.scrimSlot.update({
@@ -812,11 +846,11 @@ async function onRegConfirm(interaction) {
       });
 
       const serial = (await tx.scrimConfirmationPost.count({ where: { groupId } })) + 1;
-      await tx.scrimConfirmationPost.create({
+      const post = await tx.scrimConfirmationPost.create({
         data: { groupId, teamId: team.id, slotNo: free, serial },
       });
 
-      return { group, team, slotNo: free, track, serial, regId: reg.id };
+      return { group, team, slotNo: free, track, serial, regId: reg.id, postId: post.id };
     });
   } catch (err) {
     const msg = REG_ERRORS[err.message] || 'Registration failed. Please try again.';
@@ -833,6 +867,38 @@ async function onRegConfirm(interaction) {
     userId,
     `${result.track} team=${result.team.name} group=${result.group.groupNo} slot=${result.slotNo}`
   );
+
+  // Numbered confirmation post (source parity): post to the track's
+  // confirmation channel when configured, and record the messageId.
+  // Degrades silently when the channel var is unset.
+  const confirmChannelId = result.track === 'T3'
+    ? process.env.SCRIMS_T3_CONFIRM_CHANNEL_ID
+    : process.env.SCRIMS_OQ_CONFIRM_CHANNEL_ID;
+  if (confirmChannelId) {
+    try {
+      const ch = await interaction.client.channels.fetch(String(confirmChannelId)).catch(() => null);
+      if (ch && ch.isTextBased()) {
+        const msg = await ch.send({
+          embeds: [
+            new EmbedBuilder()
+              .setColor(trackColor(result.track))
+              .setTitle(`#${result.serial} ✅ ${result.team.name} — registered`)
+              .setDescription(
+                `**Track:** ${result.track}\n**Group:** Group ${result.group.groupNo}\n**Slot:** #${result.slotNo}`
+              )
+              .setFooter({ text: process.env.SCRIMS_SERVER_NAME || process.env.SERVER_NAME || 'BLACK RAVEN ESPORTS' })
+              .setTimestamp(),
+          ],
+        });
+        await prisma.scrimConfirmationPost
+          .update({ where: { id: result.postId }, data: { messageId: msg.id } })
+          .catch(() => {});
+      }
+    } catch (err) {
+      console.error('[scrims] confirmation post failed:', err.message);
+    }
+  }
+
   await deleteSession(userId, 'bs_reg');
 
   await replyEph(interaction, {
@@ -917,6 +983,8 @@ async function handle(interaction) {
   if (id.startsWith('bs:verify:modal:')) return safe(onVerifyPlayersModalSubmit)(interaction);
   if (id === 'bs:verify:submit') return safe(onVerifySubmit)(interaction);
   if (id === 'bs:verify:cancel') return safe(onVerifyCancel)(interaction);
+  if (id === 'bs:verify:cancel:yes') return safe(onVerifyCancelYes)(interaction);
+  if (id === 'bs:verify:cancel:no') return safe(onVerifyCancelNo)(interaction);
 
   if (id === 'bs:oq:register') return safe((i) => onTrackRegister(i, 'OQ'))(interaction);
   if (id === 'bs:t3:register') return safe((i) => onTrackRegister(i, 'T3'))(interaction);

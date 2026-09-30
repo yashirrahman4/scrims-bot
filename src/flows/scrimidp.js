@@ -32,7 +32,8 @@ const {
   EmbedBuilder,
 } = require('discord.js');
 const { prisma } = require('../db');
-const { requireAdmin, errorEmbed, successEmbed, formatIST, audit } = require('../utils');
+const { requireAdmin, isAdmin, errorEmbed, successEmbed, formatIST, audit, numEnv } = require('../utils');
+const tpl = require('../services/scrimmsgtemplate');
 const {
   extractRoomCredentials,
   parseRoomText,
@@ -43,6 +44,12 @@ const {
 const FOOTER = 'BLACK RAVEN ESPORTS';
 const SERVER_NAME = process.env.SCRIMS_SERVER_NAME || 'BLACK RAVEN ESPORTS';
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+/** Optional comma-separated moderator role IDs allowed to trigger SS-IDP OCR
+ *  by posting a screenshot in a group channel. When unset, any admin can. */
+const SS_IDP_MODERATOR_ROLE_IDS = String(process.env.SS_IDP_MODERATOR_ROLE_IDS || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
 
 // ---------------------------------------------------------------------------
 // Session helpers — contract import from Agent V's flows/scrims.js, with a
@@ -186,28 +193,11 @@ async function publishSlotList(client, groupId, { auto = false } = {}) {
 
 // ---------------------------------------------------------------------------
 // SS-IDP posting — pings the GROUP's own role (source used a global role; fixed).
+// Template rendering goes through src/services/scrimmsgtemplate (the `ss_idp`
+// template); the legacy local DEFAULT_IDP_TEMPLATE/getIdpTemplate were removed.
 // ---------------------------------------------------------------------------
 
-const DEFAULT_IDP_TEMPLATE = [
-  '**🎯 ROOM ID / PASSWORD**',
-  '',
-  '**ROOM ID:** {{room_id}}',
-  '**PASSWORD:** {{password}}',
-  '**LOBBY TIME:** {{lobby_time}}',
-  '',
-  '_Good luck, teams!_',
-].join('\n');
-
-async function getIdpTemplate() {
-  try {
-    const row = await prisma.messageTemplate.findUnique({ where: { name: 'ss_idp' } });
-    if (row && row.content) return row.content;
-  } catch (err) {
-    console.error('[scrimidp] template read failed:', err.message);
-  }
-  return DEFAULT_IDP_TEMPLATE;
-}
-
+/** Pure double-brace renderer kept for tests; the service is the live path. */
 function renderIdpTemplate(tpl, vars) {
   return String(tpl).replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_, key) => {
     const v = vars[key];
@@ -236,15 +226,20 @@ async function postRoomIdp(groupId, creds, client = null) {
     const channel = await c.channels.fetch(group.channelId).catch(() => null);
     if (!channel || typeof channel.send !== 'function') return null;
 
-    const tpl = await getIdpTemplate();
-    const body = renderIdpTemplate(tpl, {
+    // Render via the shared template service so the seeded `ss_idp` template
+    // (single-brace vars: group_mention, room_id, room_password, start_time)
+    // interpolates correctly. The service falls back to its seeded default
+    // when the DB row is missing. (Note: the legacy getIdpTemplate local was
+    // removed — the service is the single renderer now.)
+    await tpl.ensureDefaultTemplates().catch(() => null);
+    const body = await tpl.renderTemplate('ss_idp', {
+      group_mention: group.roleId ? `<@&${group.roleId}>` : '',
       room_id: creds.roomId,
-      password: creds.password,
-      lobby_time: creds.lobbyTime || 'Not provided',
-      group: `${group.groupType} Group ${group.groupNo}`,
+      room_password: creds.password,
+      start_time: creds.lobbyTime || 'Not provided',
     });
-    const rolePing = group.roleId ? `<@&${group.roleId}>` : '';
-    const content = [rolePing, body].filter(Boolean).join('\n');
+    // The ss_idp template carries {group_mention} itself, so no separate ping line.
+    const content = body;
     const sent = await channel.send({
       content,
       allowedMentions: { roles: group.roleId ? [String(group.roleId)] : [] },
@@ -271,7 +266,10 @@ async function onStartButton(interaction) {
   const api = scrimsSessionApi();
   let payload = null;
   try {
-    payload = await api.getSession(interaction.user.id, `bs:ssidp:${token}`);
+    // getSession returns the DB row ({ ...row, payload }); the OCR payload we
+    // stored lives under .payload (accept a bare payload too, for tests).
+    const row = await api.getSession(interaction.user.id, `bs:ssidp:${token}`);
+    payload = unwrapSessionPayload(row);
   } catch (err) {
     console.error('[scrimidp] session read failed:', err.message);
   }
@@ -314,7 +312,10 @@ async function onModalSubmit(interaction) {
   const api = scrimsSessionApi();
   let payload = null;
   try {
-    payload = await api.getSession(interaction.user.id, `bs:ssidp:${token}`);
+    // getSession returns the DB row ({ ...row, payload }); the OCR payload we
+    // stored lives under .payload (accept a bare payload too, for tests).
+    const row = await api.getSession(interaction.user.id, `bs:ssidp:${token}`);
+    payload = unwrapSessionPayload(row);
   } catch (err) {
     console.error('[scrimidp] session read failed:', err.message);
   }
@@ -385,6 +386,17 @@ async function handleIdpImageMessage(message) {
     if (!channelId) return;
     const group = await prisma.scrimGroup.findUnique({ where: { channelId: String(channelId) } });
     if (!group || group.status !== 'OPEN' || !group.isOpen) return;
+    // Staff gate (source parity): SS-IDP OCR intake is a privileged action.
+    // When SS_IDP_MODERATOR_ROLE_IDS is set, the uploader must hold one of
+    // those roles (or be an admin). When unset, only admins may use it.
+    {
+      const member = message.member
+        || (message.guild ? await message.guild.members.fetch(message.author.id).catch(() => null) : null);
+      const roles = member?.roles?.cache;
+      const hasModRole = roles ? SS_IDP_MODERATOR_ROLE_IDS.some((rid) => roles.has(rid)) : false;
+      const admin = await isAdmin({ member, guildId: message.guildId }).catch(() => false);
+      if (!admin && !hasModRole) return;
+    }
     const att = [...(message.attachments?.values?.() || [])].find(isImageAttachment);
     if (!att) return;
     if (att.size && att.size > MAX_IMAGE_BYTES) {
@@ -465,8 +477,9 @@ async function handleIdpImageMessage(message) {
 
 let schedulerStarted = false;
 let schedulerRunning = false;
-const matchDayPinged = new Set(); // `${groupId}:${YYYY-MM-DD}` — transient
-const resultSsReminded = new Set(); // groupId — transient
+// NOTE: match-day ping and result-SS reminder state is DB-backed
+// (ScrimGroup.matchDayPingedAt / resultSsRemindedAt) so restarts can't
+// duplicate them.
 
 function istNow(now = new Date()) {
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -492,8 +505,8 @@ async function postToGroupChannel(client, group, content, { embed = null } = {})
 const rolePing = (group) => (group.roleId ? `<@&${group.roleId}>\n` : '');
 
 async function tickIdpReminders(client, group, matches, now) {
-  const firstMinutes = Number(process.env.IDP_REMINDER_MINUTES_1 || 30);
-  const secondMinutes = Number(process.env.IDP_REMINDER_MINUTES_2 || 5);
+  const firstMinutes = numEnv('IDP_REMINDER_MINUTES_1', 30);
+  const secondMinutes = numEnv('IDP_REMINDER_MINUTES_2', 5);
   for (const m of matches) {
     if (!m.idpAt) continue;
     const diffMin = (m.idpAt.getTime() - now.getTime()) / 60000;
@@ -526,8 +539,8 @@ async function tickIdpReminders(client, group, matches, now) {
 async function tickMatchDayPing(client, group, matches, now) {
   const ist = istNow(now);
   if (ist.hour !== 11 || ist.minute >= 5) return;
-  const key = `${group.id}:${ist.dateStr}`;
-  if (matchDayPinged.has(key)) return;
+  const pingedDate = group.matchDayPingedAt ? istNow(group.matchDayPingedAt).dateStr : null;
+  if (pingedDate === ist.dateStr) return;
   const hasMatchToday = matches.some((m) => m.idpAt && istNow(m.idpAt).dateStr === ist.dateStr)
     || (group.matchDate && istNow(group.matchDate).dateStr === ist.dateStr);
   if (!hasMatchToday) return;
@@ -543,9 +556,14 @@ async function tickMatchDayPing(client, group, matches, now) {
       '',
       '__**NO SS = NO POINTS**__',
       '',
+      '__**SS SHOULD BE IN PROPER FORM**__ — no cropped, blurry, or edited screenshots.',
+      '',
       `Thanks & Regards,\n${SERVER_NAME}`,
     ].filter(Boolean).join('\n'));
-    matchDayPinged.add(key);
+    await prisma.scrimGroup.update({
+      where: { id: group.id },
+      data: { matchDayPingedAt: new Date() },
+    }).catch((err) => console.error('[scrimidp] match-day ping flag failed:', err.message));
   } catch (err) {
     console.error(`[scrimidp] match-day ping failed group=${group.id}:`, err.message);
   }
@@ -574,7 +592,7 @@ function formatDeadlineIST(date) {
 }
 
 async function tickResultSsReminder(client, group, matches) {
-  if (resultSsReminded.has(group.id)) return;
+  if (group.resultSsRemindedAt) return;
   const m2 = matches.find((m) => m.matchNo === 2);
   if (!m2 || !m2.startAt) return;
   const sendAt = new Date(m2.startAt.getTime() + 5 * 60000);
@@ -599,7 +617,10 @@ async function tickResultSsReminder(client, group, matches) {
       '',
       '**Submit both match screenshots before the deadline — late submissions will not be accepted.**',
     ].filter(Boolean).join('\n'));
-    resultSsReminded.add(group.id);
+    await prisma.scrimGroup.update({
+      where: { id: group.id },
+      data: { resultSsRemindedAt: new Date() },
+    }).catch((err) => console.error('[scrimidp] result-SS flag failed:', err.message));
     await audit('bs:ssidp:resultss', 'scheduler', `group=${group.groupType} G${group.groupNo} reminder sent`);
   } catch (err) {
     console.error(`[scrimidp] result-SS reminder failed group=${group.id}:`, err.message);
@@ -690,14 +711,35 @@ async function notifyVacancy(groupId, client = null) {
     if (!free) return { notified: 0 };
     const matches = await prisma.scrimMatch.findMany({ where: { groupId } });
     const pending = await prisma.slotReminder.findMany({ where: { groupId, notified: false } });
+    // Respect the global DM opt-out (parity with broadcast DMs): opted-out
+    // users are marked notified so their preference sticks.
+    let blocked = new Set();
+    try {
+      const ids = [...new Set(pending.map((r) => String(r.userDiscordId)).filter(Boolean))];
+      if (ids.length) {
+        const rows = await prisma.user.findMany({
+          where: { discordId: { in: ids }, dmOptOut: true },
+          select: { discordId: true },
+        });
+        blocked = new Set(rows.map((u) => String(u.discordId)));
+      }
+    } catch (err) {
+      console.error('[scrimidp] vacancy opt-out lookup failed:', err.message);
+    }
     let notified = 0;
     for (const r of pending) {
       try {
+        if (blocked.has(String(r.userDiscordId))) {
+          await prisma.slotReminder.update({ where: { id: r.id }, data: { notified: true } });
+          continue;
+        }
         const user = await c.users.fetch(r.userDiscordId).catch(() => null);
         if (!user) continue;
         await user.send({ embeds: [vacancyEmbed(group, matches)] });
         await prisma.slotReminder.update({ where: { id: r.id }, data: { notified: true } });
         notified++;
+        // Throttle with jitter (broadcast-DM parity) to avoid rate limits.
+        await new Promise((res) => setTimeout(res, 900 + Math.random() * 600));
       } catch (err) {
         console.error(`[scrimidp] vacancy DM failed user=${r.userDiscordId}:`, err.message);
       }
@@ -716,6 +758,15 @@ async function notifyVacancy(groupId, client = null) {
 
 function minutesUntil(date, now = new Date()) {
   return (new Date(date).getTime() - new Date(now).getTime()) / 60000;
+}
+
+/**
+ * Normalize a ScrimFormSession read: getSession returns the DB row
+ * ({ ...row, payload }); the OCR payload we stored lives under .payload.
+ * Accepts a bare payload too (tests).
+ */
+function unwrapSessionPayload(row) {
+  return row && row.payload && typeof row.payload === 'object' ? row.payload : row;
 }
 
 /**
@@ -739,6 +790,7 @@ module.exports = {
     minutesUntil,
     shouldSendReminder,
     renderIdpTemplate,
+    unwrapSessionPayload,
     istNow,
     formatDeadlineIST,
   },

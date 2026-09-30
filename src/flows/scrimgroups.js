@@ -30,8 +30,10 @@ const {
   audit,
   parseDateTimeIST,
   formatIST,
+  safeReply,
   getSettings,
 } = require('../utils');
+const tpl = require('../services/scrimmsgtemplate');
 const { groupPanel, teamSelfServicePanel } = require('../scrimpanels');
 
 // ---------- ScrimFormSession helpers (Agent V contract) ----------
@@ -108,6 +110,15 @@ const qualifiedRoleFor = (track) =>
 const slotRangeOk = (n) => Number.isInteger(n) && n >= SLOT_MIN && n <= SLOT_MAX;
 const startAtFromIdp = (idpDate) => new Date(idpDate.getTime() + START_OFFSET_MIN * 60000);
 
+/**
+ * Source parity (slotWasteQueries.js): escalate to a scrims ban when the
+ * warning count EXCEEDS the max — NOT at the max. A plain warning must not
+ * touch the team's registration or slot.
+ */
+function shouldEscalateToBan(warningNo, maxWarnings) {
+  return Number(warningNo) > Number(maxWarnings);
+}
+
 /** Lazy to avoid a require cycle (scrimidp imports renderSlotList from here). */
 function notifyVacancySafe(groupId, client) {
   try {
@@ -130,8 +141,9 @@ async function getGroup(groupId) {
 /** Active scrim registration of the caller's owned team in this group. */
 async function myScrimReg(groupId, discordId) {
   try {
+    // SUSPENDED teams keep self-service access so they can cancel/change.
     const team = await prisma.team.findFirst({
-      where: { status: 'ACTIVE', owner: { discordId: String(discordId) } },
+      where: { status: { in: ['ACTIVE', 'SUSPENDED'] }, owner: { discordId: String(discordId) } },
       include: { owner: true },
     });
     if (!team) return null;
@@ -248,80 +260,125 @@ async function createScrimGroup(interaction, track, { date, map1, map2, idp1, id
       where: { groupType: track },
       orderBy: { groupNo: 'desc' },
     });
-    const groupNo = (last && last.groupNo ? last.groupNo : 0) + 1;
+    let groupNo = (last && last.groupNo ? last.groupNo : 0) + 1;
 
-    // Discord role: "BR <track> G<no>"
+    // Allocate role + channel + DB rows inside a retry loop: two admins
+    // creating at once can compute the same next number; the unique
+    // (groupType, groupNo) constraint guards the DB and we retry with a fresh
+    // number. Discord artifacts from a failed attempt are rolled back.
     let role = null;
-    try {
-      role = await guild.roles.create({
-        name: `BR ${track} G${groupNo}`,
-        mentionable: true,
-        reason: `Scrim group ${track} G${groupNo}`,
-      });
-    } catch (e) {
-      console.error('[scrimgroups] role create failed:', e.message);
-    }
-
-    // Private channel: "br-<track>-g<no>" under the track category (if set)
-    const overwrites = [
-      { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
-    ];
-    if (role) overwrites.push({ id: role.id, allow: [PermissionFlagsBits.ViewChannel] });
-    try {
-      const settings = await getSettings(guild.id).catch(() => null);
-      for (const rid of (settings && settings.adminRoleIds) || []) {
-        overwrites.push({ id: rid, allow: [PermissionFlagsBits.ViewChannel] });
-      }
-    } catch (e) {
-      console.error('[scrimgroups] admin role overwrites failed:', e.message);
-    }
     let channel = null;
-    try {
-      channel = await guild.channels.create({
-        name: `br-${track.toLowerCase()}-g${groupNo}`,
-        type: ChannelType.GuildText,
-        parent: categoryEnvFor(track) || undefined,
-        permissionOverwrites: overwrites,
-        reason: `Scrim group ${track} G${groupNo}`,
-      });
-    } catch (e) {
-      console.error('[scrimgroups] channel create failed:', e.message);
-    }
-    if (!channel) return ephemeralError(interaction, 'Could not create the group channel (permissions?).');
-
-    // DB records
     let group = null;
-    try {
-      group = await prisma.scrimGroup.create({
-        data: {
-          groupNo,
-          groupType: track,
-          matchDate: idpAt1,
-          channelId: channel.id,
-          roleId: role ? role.id : null,
-          categoryId: categoryEnvFor(track) || null,
-          createdBy: interaction.user.id,
-          status: 'OPEN',
-          isOpen: true,
-        },
-      });
-      await prisma.scrimSlot.createMany({
-        data: Array.from({ length: SLOT_MAX - SLOT_MIN + 1 }, (_, i) => ({
-          groupId: group.id,
-          slotNo: SLOT_MIN + i,
-          status: 'EMPTY',
-        })),
-      });
-      await prisma.scrimMatch.create({
-        data: { groupId: group.id, matchNo: 1, map: map1, idpAt: idpAt1, startAt: startAt1 },
-      });
-      await prisma.scrimMatch.create({
-        data: { groupId: group.id, matchNo: 2, map: map2, idpAt: idpAt2, startAt: startAt2 },
-      });
-    } catch (e) {
-      console.error('[scrimgroups] DB create failed:', e);
-      await ephemeralError(interaction, 'Group channel was created but the database write failed. Please delete and retry.');
-      return;
+    let created = false;
+    let lastError = null;
+    for (let attempt = 0; attempt < 3 && !created; attempt++) {
+      role = null;
+      channel = null;
+      group = null;
+      try {
+        if (attempt > 0) {
+          const again = await prisma.scrimGroup.findFirst({
+            where: { groupType: track },
+            orderBy: { groupNo: 'desc' },
+          });
+          groupNo = (again && again.groupNo ? again.groupNo : 0) + 1;
+        }
+        // Discord role: "BR <track> G<no>"
+        try {
+          role = await guild.roles.create({
+            name: `BR ${track} G${groupNo}`,
+            mentionable: true,
+            reason: `Scrim group ${track} G${groupNo}`,
+          });
+        } catch (e) {
+          console.error('[scrimgroups] role create failed:', e.message);
+        }
+
+        // Private channel: "br-<track>-g<no>" under the track category (if set).
+        // Group role is read-only (ViewChannel + history, no Send/Attach) so
+        // teams can't chat/upload before results; the result-SS scheduler
+        // re-opens the channel when submissions are due.
+        const overwrites = [
+          { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+        ];
+        if (role) {
+          overwrites.push({
+            id: role.id,
+            allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory],
+            deny: [PermissionFlagsBits.SendMessages, PermissionFlagsBits.AttachFiles],
+          });
+        }
+        try {
+          const settings = await getSettings(guild.id).catch(() => null);
+          for (const rid of (settings && settings.adminRoleIds) || []) {
+            overwrites.push({ id: rid, allow: [PermissionFlagsBits.ViewChannel] });
+          }
+        } catch (e) {
+          console.error('[scrimgroups] admin role overwrites failed:', e.message);
+        }
+        try {
+          channel = await guild.channels.create({
+            name: `br-${track.toLowerCase()}-g${groupNo}`,
+            type: ChannelType.GuildText,
+            parent: categoryEnvFor(track) || undefined,
+            permissionOverwrites: overwrites,
+            reason: `Scrim group ${track} G${groupNo}`,
+          });
+        } catch (e) {
+          console.error('[scrimgroups] channel create failed:', e.message);
+        }
+        if (!channel) throw new Error('CHANNEL_FAILED');
+
+        // DB records
+        group = await prisma.scrimGroup.create({
+          data: {
+            groupNo,
+            groupType: track,
+            matchDate: idpAt1,
+            channelId: channel.id,
+            roleId: role ? role.id : null,
+            categoryId: categoryEnvFor(track) || null,
+            createdBy: interaction.user.id,
+            status: 'OPEN',
+            isOpen: true,
+          },
+        });
+        await prisma.scrimSlot.createMany({
+          data: Array.from({ length: SLOT_MAX - SLOT_MIN + 1 }, (_, i) => ({
+            groupId: group.id,
+            slotNo: SLOT_MIN + i,
+            status: 'EMPTY',
+          })),
+        });
+        await prisma.scrimMatch.create({
+          data: { groupId: group.id, matchNo: 1, map: map1, idpAt: idpAt1, startAt: startAt1 },
+        });
+        await prisma.scrimMatch.create({
+          data: { groupId: group.id, matchNo: 2, map: map2, idpAt: idpAt2, startAt: startAt2 },
+        });
+        created = true;
+      } catch (e) {
+        lastError = e;
+        console.error(`[scrimgroups] create attempt ${attempt + 1} failed:`, e.message || e);
+        // Roll back this attempt's artifacts (slots/matches cascade off ScrimGroup).
+        if (group) {
+          await prisma.scrimGroup.delete({ where: { id: group.id } }).catch(() => {});
+          group = null;
+        }
+        if (channel) {
+          await channel.delete().catch(() => {});
+          channel = null;
+        }
+        if (role) {
+          await role.delete().catch(() => {});
+          role = null;
+        }
+        if (!(e && e.code === 'P2002') || attempt >= 2) break;
+      }
+    }
+    if (!created || !group || !channel) {
+      console.error('[scrimgroups] DB create failed:', lastError);
+      return ephemeralError(interaction, 'Could not create the group (Discord or database error). Nothing was left behind — please retry.');
     }
 
     // Panels into the group channel
@@ -348,7 +405,8 @@ async function createScrimGroup(interaction, track, { date, map1, map2, idp1, id
     }
 
     await audit('scrim_group_create', interaction.user.id, `${track} G${groupNo} created (channel ${channel.id})`);
-    await interaction.reply({
+    // Deferred-safe: the router defers /create_group before we get here.
+    return safeReply(interaction, {
       embeds: [
         successEmbed(
           `✅ Group created — **${track} G${groupNo}**\n<#${channel.id}>\n` +
@@ -535,20 +593,51 @@ async function warnModalSubmit(interaction, groupId) {
     });
 
     let autoBanned = false;
-    if (warningNo >= MAX_WARNINGS) {
+    // Source parity: escalate when the count EXCEEDS the max (not >=). A plain
+    // warning must NOT touch the team's registration or slot — only a real
+    // escalation removes them from the group.
+    if (shouldEscalateToBan(warningNo, MAX_WARNINGS)) {
       autoBanned = true;
       const expiresAt = new Date(Date.now() + BAN_DAYS * 86400000);
-      if (ownerDiscordId) {
+      const banReason = `Slot waste — ${warningNo} warnings in scrims (${reason})`;
+      // Linked members: owner + every roster player with a discordId.
+      const memberDiscordIds = new Set();
+      if (ownerDiscordId) memberDiscordIds.add(String(ownerDiscordId));
+      const members = await prisma.teamMember.findMany({
+        where: { teamId: slot.teamId },
+        include: { player: true },
+      }).catch(() => []);
+      for (const m of members) {
+        if (m.player && m.player.discordId) memberDiscordIds.add(String(m.player.discordId));
+      }
+      for (const did of memberDiscordIds) {
         await prisma.scrimsBan.create({
           data: {
-            discordId: ownerDiscordId,
+            discordId: did,
             teamId: slot.teamId,
-            reason: `Slot waste — ${warningNo} warnings in scrims (${reason})`,
+            reason: banReason,
             expiresAt,
             bannedBy: interaction.user.id,
             active: true,
           },
-        });
+        }).catch(() => {});
+      }
+      // Remove the team's ACTIVE registration in THIS group and free the slot.
+      await prisma.$transaction([
+        prisma.scrimRegistration.updateMany({
+          where: { teamId: slot.teamId, groupId: group.id, status: 'ACTIVE' },
+          data: { status: 'REMOVED' },
+        }),
+        prisma.scrimSlot.updateMany({
+          where: { groupId: group.id, slotNo, teamId: slot.teamId },
+          data: { status: 'EMPTY', teamId: null },
+        }),
+      ]).catch(() => {});
+      // Remove group roles best-effort.
+      if (group.roleId) {
+        for (const did of memberDiscordIds) {
+          await setGroupRole(interaction, did, group.roleId, false);
+        }
       }
       await prisma.slotWarningLog.create({
         data: {
@@ -558,10 +647,21 @@ async function warnModalSubmit(interaction, groupId) {
           ownerDiscordId,
           staffId: interaction.user.id,
           warningNo,
-          reason: `Auto-ban: reached ${MAX_WARNINGS} slot-waste warnings`,
+          reason: `Auto-ban: exceeded ${MAX_WARNINGS} slot-waste warnings`,
           action: 'AUTO_BANNED',
         },
       });
+      // Vacancy: the freed slot may have subscribers.
+      notifyVacancySafe(group.id, interaction.client);
+      // DM the owner (source parity), best-effort.
+      if (ownerDiscordId) {
+        const owner = await interaction.client.users.fetch(String(ownerDiscordId)).catch(() => null);
+        if (owner) {
+          await owner.send({
+            content: `⛔ **${teamName}** has been scrims-banned for ${BAN_DAYS} days (slot-waste warning #${warningNo} in ${group.groupType} G${group.groupNo}, slot ${slotNo}).\n**Reason:** ${reason}`,
+          }).catch(() => {});
+        }
+      }
     }
 
     await audit(
@@ -693,14 +793,43 @@ async function qualifyModalSubmit(interaction, groupId) {
       console.error('[scrimgroups] channel lock failed:', e.message);
     }
 
-    const announce = winner
-      ? `🏆 ${group.groupType} Group ${group.groupNo} — **${winner.name}** qualifies`
-      : `🏆 ${group.groupType} Group ${group.groupNo} — no qualifier this time`;
+    // Templated announcements (source parity): IDP-channel post with the
+    // group role ping, plus results-channel post. Templates are staff-editable
+    // via /message_template (qualification_idp / qualification_results /
+    // qualification_none_idp / qualification_none_results).
+    await tpl.ensureDefaultTemplates().catch(() => null);
+    const ownerMention = winner && winner.owner ? `<@${winner.owner.discordId}>` : '';
+    const base = { group_type: group.groupType, group_number: group.groupNo };
+    let idpText, resultsText;
+    if (winner) {
+      idpText = await tpl.renderTemplate('qualification_idp', {
+        congrats_emoji: '🎉',
+        owner_mention: ownerMention,
+        trophy_emoji: '🏆',
+        ...base,
+        slot_number: winSlot,
+        team_name: winner.name,
+        fire_emoji: '🔥',
+      });
+      resultsText = await tpl.renderTemplate('qualification_results', {
+        trophy_emoji: '🏆',
+        ...base,
+        slot_number: winSlot,
+        team_name: winner.name,
+        fire_emoji: '🔥',
+      });
+    } else {
+      idpText = await tpl.renderTemplate('qualification_none_idp', base);
+      resultsText = await tpl.renderTemplate('qualification_none_results', base);
+    }
+    await postToChannel(interaction.client, interaction.guild, group.channelId, {
+      content: [group.roleId ? `<@&${group.roleId}>` : '', idpText].filter(Boolean).join('\n'),
+    });
     await postToChannel(interaction.client, interaction.guild, resultsChannelFor(group.groupType), {
       embeds: [
         new EmbedBuilder()
           .setColor(0xf1c40f)
-          .setTitle(announce)
+          .setDescription(resultsText)
           .setFooter({ text: 'BLACK RAVEN ESPORTS' })
           .setTimestamp(),
       ],
@@ -711,6 +840,9 @@ async function qualifyModalSubmit(interaction, groupId) {
       interaction.user.id,
       `${group.groupType} G${group.groupNo} closed; qualifier: ${winner ? winner.name : 'none'}`
     );
+    const announce = winner
+      ? `🏆 ${group.groupType} Group ${group.groupNo} — **${winner.name}** qualifies`
+      : `🏆 ${group.groupType} Group ${group.groupNo} — no qualifier this time`;
     return interaction.reply({ embeds: [successEmbed(`${announce}. Group locked.` )], ephemeral: true });
   } catch (e) {
     console.error('[scrimgroups] qualify submit failed:', e);
@@ -1005,5 +1137,5 @@ module.exports = {
   saveSession,
   getSession,
   deleteSession,
-  _test: { slotRangeOk, startAtFromIdp },
+  _test: { slotRangeOk, startAtFromIdp, shouldEscalateToBan },
 };

@@ -245,6 +245,8 @@ model ScrimGroup {
   resultPublishedAt DateTime?
   cleanedAt       DateTime?
   slotListAutoPublishedAt DateTime?
+  matchDayPingedAt DateTime?
+  resultSsRemindedAt DateTime?
   createdAt       DateTime  @default(now())
   matches         ScrimMatch[]
   slots           ScrimSlot[]

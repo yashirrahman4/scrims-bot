@@ -45,6 +45,8 @@ CREATE TABLE IF NOT EXISTS "ScrimGroup" (
   "resultPublishedAt" TIMESTAMP(3),
   "cleanedAt" TIMESTAMP(3),
   "slotListAutoPublishedAt" TIMESTAMP(3),
+  "matchDayPingedAt" TIMESTAMP(3),
+  "resultSsRemindedAt" TIMESTAMP(3),
   "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT "ScrimGroup_pkey" PRIMARY KEY ("id")
 );
@@ -64,8 +66,14 @@ CREATE TABLE IF NOT EXISTS "ScrimMatch" (
   CONSTRAINT "ScrimMatch_pkey" PRIMARY KEY ("id")
 );
 CREATE UNIQUE INDEX IF NOT EXISTS "ScrimMatch_groupId_matchNo_key" ON "ScrimMatch"("groupId", "matchNo");
-ALTER TABLE "ScrimMatch" ADD CONSTRAINT "ScrimMatch_groupId_fkey"
-  FOREIGN KEY ("groupId") REFERENCES "ScrimGroup"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+-- Idempotent: the startup self-heal may already have created this FK.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ScrimMatch_groupId_fkey') THEN
+    ALTER TABLE "ScrimMatch" ADD CONSTRAINT "ScrimMatch_groupId_fkey"
+      FOREIGN KEY ("groupId") REFERENCES "ScrimGroup"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS "ScrimSlot" (
   "id" TEXT NOT NULL,
@@ -77,8 +85,14 @@ CREATE TABLE IF NOT EXISTS "ScrimSlot" (
   CONSTRAINT "ScrimSlot_pkey" PRIMARY KEY ("id")
 );
 CREATE UNIQUE INDEX IF NOT EXISTS "ScrimSlot_groupId_slotNo_key" ON "ScrimSlot"("groupId", "slotNo");
-ALTER TABLE "ScrimSlot" ADD CONSTRAINT "ScrimSlot_groupId_fkey"
-  FOREIGN KEY ("groupId") REFERENCES "ScrimGroup"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+-- Idempotent: the startup self-heal may already have created this FK.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ScrimSlot_groupId_fkey') THEN
+    ALTER TABLE "ScrimSlot" ADD CONSTRAINT "ScrimSlot_groupId_fkey"
+      FOREIGN KEY ("groupId") REFERENCES "ScrimGroup"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS "ScrimRegistration" (
   "id" TEXT NOT NULL,

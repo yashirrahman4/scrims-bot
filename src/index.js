@@ -12,7 +12,7 @@ const scrimGroups = require('./flows/scrimgroups');
 const scrimAdmin = require('./flows/scrimadmin');
 
 // Build tag — bump when shipping a fix so the console shows which code is live.
-const BUILD = '2026-09-30.scrimport-2';
+const BUILD = '2026-09-30.scrimport-3';
 console.log(`🤖 scrims-bot ${BUILD} starting...`);
 
 // Git auto-update diagnostic: the HeavenCloud egg runs `git pull` on restart.
@@ -139,6 +139,23 @@ async function boot() {
     console.error('❌ Database connection failed:', err.message);
     console.error('   Check DATABASE_URL — it must be the pooled Neon connection string.');
     process.exit(1);
+  }
+  // Self-register slash commands on every boot. The HeavenCloud egg only runs
+  // `node src/index.js`, so without this new commands (e.g. /create_group)
+  // would never appear in Discord until someone manually ran deploy-commands.
+  // The PUT is idempotent — Discord just upserts the same command set.
+  if (!config.clientId || !config.guildId) {
+    console.error('⚠️ CLIENT_ID and/or GUILD_ID are not set — skipping slash command registration. New commands (e.g. /create_group) will NOT appear in Discord until these env vars are set and the bot restarts.');
+  } else {
+    try {
+      const { REST, Routes } = require('discord.js');
+      const { commands } = require('./commands');
+      const rest = new REST({ version: '10' }).setToken(config.token);
+      await rest.put(Routes.applicationGuildCommands(config.clientId, config.guildId), { body: commands });
+      console.log(`✅ Slash commands registered (${commands.length}).`);
+    } catch (err) {
+      console.error('⚠️ Slash command registration failed (bot still starting):', err.message);
+    }
   }
   await client.login(config.token);
 }

@@ -64,7 +64,9 @@ function extractDiscordId(input) {
   return /^\d{17,20}$/.test(id) ? id : false;
 }
 
-/** Parse "YYYY-MM-DD HH:MM" as IST -> Date (UTC). Returns null when invalid. */
+/** Parse "YYYY-MM-DD HH:MM" as IST -> Date (UTC). Returns null when invalid.
+ * Round-trip validates so impossible dates like 2026-02-30 are rejected
+ * (Date.UTC would silently roll them into March). */
 function parseDateTimeIST(input) {
   const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})$/.exec((input || '').trim());
   if (!m) return null;
@@ -75,7 +77,37 @@ function parseDateTimeIST(input) {
   const mi = +m[5];
   if (mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 || mi > 59) return null;
   const dt = new Date(Date.UTC(y, mo - 1, d, h - 5, mi - 30)); // IST = UTC+5:30
-  return Number.isNaN(dt.getTime()) ? null : dt;
+  if (Number.isNaN(dt.getTime())) return null;
+  const back = `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]}`;
+  if (formatIST(dt).slice(0, 16) !== back) return null;
+  return dt;
+}
+
+/**
+ * Interaction-safe primary reply: uses editReply when the interaction was
+ * already deferred, followUp when already replied, plain reply otherwise.
+ * Returns null when no path applies; never throws.
+ */
+async function safeReply(interaction, payload) {
+  try {
+    if (interaction.deferred) return await interaction.editReply(payload);
+    if (interaction.replied) return await interaction.followUp(payload);
+    return await interaction.reply(payload);
+  } catch (err) {
+    console.error('[utils] safeReply failed:', err.message);
+    return null;
+  }
+}
+
+/**
+ * Parse an env var as a number with a fallback; never returns NaN.
+ * NaN/undefined/non-numeric values silently degrade to the default.
+ */
+function numEnv(name, def) {
+  const raw = process.env[name];
+  if (raw == null || String(raw).trim() === '') return def;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : def;
 }
 
 /** Format a Date as "YYYY-MM-DD HH:MM IST". */
@@ -223,6 +255,8 @@ module.exports = {
   extractDiscordId,
   parseDateTimeIST,
   formatIST,
+  safeReply,
+  numEnv,
   generateTeamId,
   getOrCreateUser,
   getOwnedTeam,

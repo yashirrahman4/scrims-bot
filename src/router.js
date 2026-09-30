@@ -15,19 +15,39 @@ const { prisma } = require('./db');
 const { requireAdmin, errorEmbed, audit } = require('./utils');
 
 /** /ss_idp manual — staff posts room credentials without OCR. */
+const LOBBY_TIME_RE = /^([01]?\d|2[0-3]):[0-5]\d$/;
+/** Room ID: 5–15 digits. Exported for tests. */
+function isValidRoomId(v) { return /^\d{5,15}$/.test(String(v || '').trim()); }
+/** Room password: 3–20 letters/digits. Exported for tests. */
+function isValidRoomPassword(v) { return /^[a-z0-9]{3,20}$/i.test(String(v || '').trim()); }
+/** Lobby time: HH:MM (24h IST) or blank. Exported for tests. */
+function isValidLobbyTime(v) { const t = String(v || '').trim(); return !t || LOBBY_TIME_RE.test(t); }
 async function handleSsIdpManual(interaction) {
   const track = interaction.options.getString('track', true);
   const groupNo = interaction.options.getInteger('group_no', true);
-  const roomId = interaction.options.getString('room_id', true);
-  const password = interaction.options.getString('password', true);
-  const lobbyTime = interaction.options.getString('lobby_time') || '';
-  const group = await prisma.scrimGroup.findFirst({
-    where: { groupType: track, groupNo, status: { not: 'DELETED' } },
-  });
-  if (!group) {
-    return interaction.editReply({ embeds: [errorEmbed(`No active ${track} group ${groupNo} found.`)] });
+  const roomId = interaction.options.getString('room_id', true).trim();
+  const password = interaction.options.getString('password', true).trim();
+  const lobbyTime = (interaction.options.getString('lobby_time') || '').trim();
+  // Format validation (was only in the dead cmds-i.execute — now enforced here).
+  if (!isValidRoomId(roomId)) {
+    return interaction.editReply({ embeds: [errorEmbed('room_id must be 5–15 digits.')] });
   }
-  await scrimIdp.postRoomIdp(group.id, { roomId, password, lobbyTime }, interaction.client);
+  if (!isValidRoomPassword(password)) {
+    return interaction.editReply({ embeds: [errorEmbed('password must be 3–20 letters/digits.')] });
+  }
+  if (!isValidLobbyTime(lobbyTime)) {
+    return interaction.editReply({ embeds: [errorEmbed('lobby_time must be HH:MM (24h IST).')] });
+  }
+  const group = await prisma.scrimGroup.findFirst({
+    where: { groupType: track, groupNo, status: 'OPEN' },
+  });
+  if (!group || !group.channelId) {
+    return interaction.editReply({ embeds: [errorEmbed(`No OPEN ${track} group ${groupNo} found.`)] });
+  }
+  const sent = await scrimIdp.postRoomIdp(group.id, { roomId, password, lobbyTime: lobbyTime || null }, interaction.client);
+  if (!sent) {
+    return interaction.editReply({ embeds: [errorEmbed('Could not post to the group channel. Check that the channel still exists and try again.')] });
+  }
   await audit('SCRIM_SSIDP_MANUAL', interaction.user.id, `${track} G${groupNo} room posted manually`);
   return interaction.editReply({ content: `✅ Room ID/password posted to ${track} Group ${groupNo}.` });
 }
@@ -138,4 +158,4 @@ async function handleInteraction(interaction) {
   }
 }
 
-module.exports = { handleInteraction };
+module.exports = { handleInteraction, _test: { isValidRoomId, isValidRoomPassword, isValidLobbyTime } };

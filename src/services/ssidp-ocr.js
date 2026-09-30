@@ -30,8 +30,10 @@ try {
   console.warn('[ssidp-ocr] tesseract.js is not available — OCR degraded to manual /ss_idp:', err.message);
 }
 
-const DUP_MINUTES = Number(process.env.SS_IDP_DUP_MINUTES || 30);
-const OCR_TIMEOUT_MS = Number(process.env.SS_IDP_OCR_TIMEOUT_MS || 60000);
+const { numEnv } = require('../utils');
+
+const DUP_MINUTES = numEnv('SS_IDP_DUP_MINUTES', 30);
+const OCR_TIMEOUT_MS = numEnv('SS_IDP_OCR_TIMEOUT_MS', 60000);
 
 // sha256(roomId:password) -> timestamp (ms). Pruned to the last hour on write.
 const recentFingerprints = new Map();
@@ -142,10 +144,10 @@ async function extractRoomCredentials(imageBuffer) {
     // PUBG/BGMI lobby header: Room ID + Room Password sit in the upper-left
     // header area; the player grid below/right is full of distracting numbers.
     const crop = {
-      left: Math.max(0, Math.floor(w * Number(process.env.SS_IDP_CROP_LEFT || 0.02))),
-      top: Math.max(0, Math.floor(h * Number(process.env.SS_IDP_CROP_TOP || 0.0))),
-      width: Math.min(w, Math.max(1, Math.floor(w * Number(process.env.SS_IDP_CROP_WIDTH || 0.45)))),
-      height: Math.min(h, Math.max(1, Math.floor(h * Number(process.env.SS_IDP_CROP_HEIGHT || 0.28)))),
+      left: Math.max(0, Math.floor(w * numEnv('SS_IDP_CROP_LEFT', 0.02))),
+      top: Math.max(0, Math.floor(h * numEnv('SS_IDP_CROP_TOP', 0.0))),
+      width: Math.min(w, Math.max(1, Math.floor(w * numEnv('SS_IDP_CROP_WIDTH', 0.45)))),
+      height: Math.min(h, Math.max(1, Math.floor(h * numEnv('SS_IDP_CROP_HEIGHT', 0.28)))),
     };
     const header = await sharp(imageBuffer)
       .extract(crop)
