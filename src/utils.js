@@ -64,6 +64,52 @@ function extractDiscordId(input) {
   return /^\d{17,20}$/.test(id) ? id : false;
 }
 
+/**
+ * Lenient date+time parser for staff-facing commands. Accepts dates like
+ * `30`, `30-09`, `30/09/2026`, `30-09-2026`, `2026-09-30` and times like
+ * `1:40` or `01:40` (24h IST). A bare day or day-month defaults to the
+ * current IST calendar, rolling forward to the next month/year when that
+ * date already passed. Returns a Date (UTC instant), or null when invalid.
+ * Impossible dates (e.g. 30 Feb) are rejected via the strict parser.
+ */
+function parseLenientDateTimeIST(dateStr, timeStr) {
+  const d = String(dateStr || '').trim().replace(/\//g, '-');
+  const tm = /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(String(timeStr || '').trim());
+  if (!tm) return null;
+  const hh = tm[1].padStart(2, '0');
+  const mm = tm[2];
+  // Current IST calendar date.
+  const nowIst = new Date(Date.now() + 5.5 * 3600 * 1000);
+  const cy = nowIst.getUTCFullYear();
+  const cm = nowIst.getUTCMonth() + 1;
+  const cd = nowIst.getUTCDate();
+  const todayKey = cy * 10000 + cm * 100 + cd;
+  let y;
+  let mo;
+  let dd;
+  let m;
+  if ((m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(d))) {
+    y = +m[1]; mo = +m[2]; dd = +m[3];
+  } else if ((m = /^(\d{1,2})-(\d{1,2})-(\d{4})$/.exec(d))) {
+    dd = +m[1]; mo = +m[2]; y = +m[3];
+  } else if ((m = /^(\d{1,2})-(\d{1,2})$/.exec(d))) {
+    dd = +m[1]; mo = +m[2]; y = cy;
+    if (y * 10000 + mo * 100 + dd < todayKey) y += 1;
+  } else if ((m = /^(\d{1,2})$/.exec(d))) {
+    dd = +m[1]; y = cy; mo = cm;
+    if (dd < cd) {
+      mo += 1;
+      if (mo > 12) { mo = 1; y += 1; }
+    }
+  } else {
+    return null;
+  }
+  const iso =
+    `${String(y).padStart(4, '0')}-${String(mo).padStart(2, '0')}-${String(dd).padStart(2, '0')}` +
+    ` ${hh}:${mm}`;
+  return parseDateTimeIST(iso);
+}
+
 /** Parse "YYYY-MM-DD HH:MM" as IST -> Date (UTC). Returns null when invalid.
  * Round-trip validates so impossible dates like 2026-02-30 are rejected
  * (Date.UTC would silently roll them into March). */
@@ -254,6 +300,7 @@ module.exports = {
   isValidTag,
   extractDiscordId,
   parseDateTimeIST,
+  parseLenientDateTimeIST,
   formatIST,
   safeReply,
   numEnv,

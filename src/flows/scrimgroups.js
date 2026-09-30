@@ -28,6 +28,7 @@ const {
   successEmbed,
   audit,
   parseDateTimeIST,
+  parseLenientDateTimeIST,
   formatIST,
   safeReply,
   getSettings,
@@ -129,8 +130,10 @@ function notifyVacancySafe(groupId, client) {
 
 async function ephemeralError(interaction, msg) {
   const payload = { embeds: [errorEmbed(msg)], flags: MessageFlags.Ephemeral };
-  if (interaction.replied || interaction.deferred) await interaction.followUp(payload).catch(() => {});
-  else await interaction.reply(payload).catch(() => {});
+  // editReply on the deferred interaction is the most reliable path; log loudly
+  // instead of swallowing so a failed error reply can never look like a hang.
+  const sent = await safeReply(interaction, payload);
+  if (!sent) console.error('[scrimgroups] ephemeralError FAILED to reply:', msg);
 }
 
 async function getGroup(groupId) {
@@ -243,10 +246,14 @@ async function createScrimGroup(interaction, track, { date, map1, map2, idp1, id
       return ephemeralError(interaction, 'Invalid track. Use OQ or T3.');
     }
     const dateStr = String(date || '').trim();
-    const idpAt1 = parseDateTimeIST(`${dateStr} ${String(idp1 || '').trim()}`);
-    const idpAt2 = parseDateTimeIST(`${dateStr} ${String(idp2 || '').trim()}`);
+    // Lenient: accepts 30, 30-09, 30/09/2026, 2026-09-30 + 1:40 / 01:40.
+    const idpAt1 = parseLenientDateTimeIST(dateStr, idp1);
+    const idpAt2 = parseLenientDateTimeIST(dateStr, idp2);
     if (!idpAt1 || !idpAt2) {
-      return ephemeralError(interaction, 'Invalid date/time. Use YYYY-MM-DD and HH:MM (24h, IST).');
+      return ephemeralError(
+        interaction,
+        'Invalid date/time. Date: 30, 30-09 or 2026-09-30. Time: 1:40 or 13:40 (24h IST).'
+      );
     }
     if (idpAt2.getTime() <= idpAt1.getTime()) {
       return ephemeralError(interaction, 'Match 2 IDP must be after Match 1 IDP.');

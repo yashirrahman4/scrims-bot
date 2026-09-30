@@ -18,7 +18,7 @@ const MAP_CHOICES = (config.defaultMaps || ['Erangel', 'Miramar', 'Rondo']).map(
 function addGroupOptions(builder) {
   return builder
     .addStringOption((o) =>
-      o.setName('date').setDescription('Match date (YYYY-MM-DD)').setRequired(true)
+      o.setName('date').setDescription('Date: 30, 30-09 or 2026-09-30').setRequired(true)
     )
     .addStringOption((o) =>
       o.setName('map1').setDescription('Match 1 map').setRequired(true).addChoices(...MAP_CHOICES)
@@ -27,10 +27,10 @@ function addGroupOptions(builder) {
       o.setName('map2').setDescription('Match 2 map').setRequired(true).addChoices(...MAP_CHOICES)
     )
     .addStringOption((o) =>
-      o.setName('idp1').setDescription('Match 1 IDP time (HH:MM, 24h, IST)').setRequired(true)
+      o.setName('idp1').setDescription('Match 1 IDP time: 1:40 or 13:40 (24h IST)').setRequired(true)
     )
     .addStringOption((o) =>
-      o.setName('idp2').setDescription('Match 2 IDP time (HH:MM, 24h, IST)').setRequired(true)
+      o.setName('idp2').setDescription('Match 2 IDP time: 1:40 or 13:40 (24h IST)').setRequired(true)
     );
 }
 
