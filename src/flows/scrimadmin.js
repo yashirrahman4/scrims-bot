@@ -1,6 +1,7 @@
 // Agent A — scrims admin tools.
 // Handles: /message_template, /bot_health, /export scrim, bs:admin:*, bs:tpl:*,
-// bs:lobby:*. All staff actions are admin-gated via requireAdmin.
+// bs:lobby:*. Staff actions are admin-gated via requireAdmin; the lobby panel's
+// Refresh button is intentionally public (read-only).
 // Live lobby scheduler + lobby posting, message-template proxy exports.
 
 const {
@@ -261,6 +262,21 @@ async function handleExportScrim(interaction) {
 
 // ---------------------------------------------------------------- buttons
 
+/** Public lobby refresh — read-only, safe for every member in the lobby channel. */
+async function handleLobbyRefreshPublic(interaction) {
+  try {
+    const n = await refreshAllLobbyPanels(interaction.client);
+    const payload = {
+      embeds: [successEmbed(`🔄 Lobby refreshed — ${n} panel${n === 1 ? '' : 's'} updated.`)],
+      flags: MessageFlags.Ephemeral,
+    };
+    if (interaction.replied || interaction.deferred) await interaction.followUp(payload).catch(() => {});
+    else await interaction.reply(payload).catch(() => {});
+  } catch (err) {
+    console.error('[lobby] public refresh failed:', err.message);
+  }
+}
+
 async function handleButton(interaction) {
   const id = interaction.customId;
   if (!(await requireAdmin(interaction))) return;
@@ -299,10 +315,6 @@ async function handleButton(interaction) {
     if (id.startsWith('bs:tpl:set:')) {
       const tname = id.slice('bs:tpl:set:'.length);
       return showTemplateSetModal(interaction, tname);
-    }
-    if (id === 'bs:lobby:refresh') {
-      const n = await refreshAllLobbyPanels(interaction.client);
-      return interaction.reply({ embeds: [successEmbed(`Refreshed ${n} live lobby panel(s).`)], flags: MessageFlags.Ephemeral });
     }
   } catch (err) {
     console.error('[scrimadmin] button failed:', err.message);
@@ -446,6 +458,22 @@ async function handleBanModal(interaction) {
     );
   }
   await audit('SCRIMS_BAN', interaction.user.id, `${discordId} ${expiresAt ? days + 'd' : 'permanent'} — ${reason || 'no reason'}`);
+  // DM the banned team leader (parity with the slot-waste auto-ban DM), best-effort.
+  try {
+    const bannedUser = await interaction.client.users.fetch(discordId).catch(() => null);
+    if (bannedUser) {
+      await bannedUser
+        .send({
+          content:
+            `⛔ You have been banned from Black Raven scrims ${expiresAt ? `for ${days} day(s)` : 'permanently'}.\n` +
+            `**Reason:** ${reason || '—'}\n` +
+            `Banned by staff — contact staff if you believe this is a mistake.`,
+        })
+        .catch(() => {});
+    }
+  } catch (err) {
+    console.error('[scrimadmin] ban DM failed:', err.message);
+  }
   return interaction.reply({
     embeds: [successEmbed(`<@${discordId}> banned ${expiresAt ? `for ${days} day(s)` : 'permanently'}.`)],
     flags: MessageFlags.Ephemeral,
@@ -715,31 +743,59 @@ async function handleTemplateSetModal(interaction, tname) {
 // ---------------------------------------------------------------- lobby
 
 /** Refresh every active live lobby panel in place; deactivates dead ones. Returns refresh count. */
+let lobbyRefreshRunning = false;
+let lobbyRefreshTimer = null;
 async function refreshAllLobbyPanels(client) {
-  let refreshed = 0;
-  let panels = [];
+  if (lobbyRefreshRunning) return 0;
+  lobbyRefreshRunning = true;
   try {
-    panels = await prisma.liveLobbyPanel.findMany({ where: { active: true } });
-  } catch (err) {
-    console.error('[lobby] fetch panels failed:', err.message);
-    return 0;
-  }
-  for (const panel of panels) {
+    let refreshed = 0;
+    let panels = [];
     try {
-      const embed = await buildLobbyEmbed(panel.panelType);
-      const channel = await client.channels.fetch(panel.channelId).catch(() => null);
-      const msg = channel ? await channel.messages.fetch(panel.messageId).catch(() => null) : null;
-      if (!msg) {
-        await prisma.liveLobbyPanel.update({ where: { id: panel.id }, data: { active: false } }).catch(() => null);
-        continue;
-      }
-      await msg.edit({ embeds: [embed] });
-      refreshed++;
+      panels = await prisma.liveLobbyPanel.findMany({ where: { active: true } });
     } catch (err) {
-      console.error('[lobby] refresh failed for panel', panel.id, err.message);
+      console.error('[lobby] fetch panels failed:', err.message);
+      return 0;
     }
+    for (const panel of panels) {
+      try {
+        const embed = await buildLobbyEmbed(panel.panelType);
+        const channel = await client.channels.fetch(panel.channelId).catch(() => null);
+        const msg = channel ? await channel.messages.fetch(panel.messageId).catch(() => null) : null;
+        if (!msg) {
+          await prisma.liveLobbyPanel.update({ where: { id: panel.id }, data: { active: false } }).catch(() => null);
+          continue;
+        }
+        // Re-send components explicitly: the panel must keep its Refresh button
+        // across edits even if a future discord.js version stops preserving them.
+        await msg.edit({ embeds: [embed], components: msg.components.map((c) => c.toJSON()) });
+        refreshed++;
+      } catch (err) {
+        console.error('[lobby] refresh failed for panel', panel.id, err.message);
+      }
+    }
+    return refreshed;
+  } finally {
+    lobbyRefreshRunning = false;
   }
-  return refreshed;
+}
+
+/**
+ * Debounced event-driven lobby refresh. Call after any lobby-affecting change
+ * (registration, warn/ban, remove, qualify, group create) so the panel updates
+ * promptly instead of waiting for the 120s timer. Bursts coalesce into one
+ * refresh ~5s later. Never throws.
+ */
+function scheduleLobbyRefresh(client) {
+  try {
+    if (!client || lobbyRefreshTimer) return;
+    lobbyRefreshTimer = setTimeout(() => {
+      lobbyRefreshTimer = null;
+      refreshAllLobbyPanels(client).catch((err) => console.error('[lobby] scheduled refresh failed:', err.message));
+    }, 5000);
+  } catch (err) {
+    console.error('[lobby] schedule failed:', err.message);
+  }
 }
 
 function startLobbyScheduler(client) {
@@ -787,11 +843,10 @@ async function handle(interaction) {
     }
 
     if (!id.startsWith('bs:')) return;
-    if (
-      id.startsWith('bs:admin:') ||
-      id.startsWith('bs:tpl:') ||
-      id === 'bs:lobby:refresh'
-    ) {
+    // Public: anyone in the lobby channel may refresh the live lobby panel
+    // (read-only refresh — no admin gate).
+    if (id === 'bs:lobby:refresh') return handleLobbyRefreshPublic(interaction);
+    if (id.startsWith('bs:admin:') || id.startsWith('bs:tpl:')) {
       return handleButton(interaction);
     }
   } catch (err) {
@@ -811,6 +866,7 @@ module.exports = {
   startLobbyScheduler,
   postLobbyPanel,
   refreshAllLobbyPanels,
+  scheduleLobbyRefresh,
   ensureDefaultTemplates: tpl.ensureDefaultTemplates,
   getMessageTemplate: tpl.getMessageTemplate,
   renderTemplate: tpl.renderTemplate,

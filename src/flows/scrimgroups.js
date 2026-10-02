@@ -38,6 +38,7 @@ const {
 } = require('../utils');
 const tpl = require('../services/scrimmsgtemplate');
 const { teamSelfServicePanel, scrimIdpPanel, scrimIdpPanelTitle } = require('../scrimpanels');
+const { scheduleLobbyRefresh } = require('./scrimadmin');
 
 // ---------- ScrimFormSession helpers (Agent V contract) ----------
 // scrims.js is owned by a parallel agent; use its helpers when present,
@@ -678,6 +679,8 @@ async function createScrimGroup(interaction, track, { date, map1, map2, idp1, id
     }
 
     await audit('scrim_group_create', interaction.user.id, `${track} G${groupNo} created (channel ${channel.id})`);
+    // New open group — lobby counts changed; refresh the live lobby panel promptly.
+    scheduleLobbyRefresh(interaction.client);
     stepLog(`panels posted, sending final reply (G${groupNo})`);
     // Deferred-safe: the router defers /create_group before we get here.
     const sent = await safeReply(interaction, {
@@ -929,15 +932,8 @@ async function warnModalSubmit(interaction, groupId) {
       });
       // Vacancy: the freed slot may have subscribers.
       notifyVacancySafe(group.id, interaction.client);
-      // DM the owner (source parity), best-effort.
-      if (ownerDiscordId) {
-        const owner = await interaction.client.users.fetch(String(ownerDiscordId)).catch(() => null);
-        if (owner) {
-          await owner.send({
-            content: `⛔ **${teamName}** has been scrims-banned for ${BAN_DAYS} days (slot-waste warning #${warningNo} in ${group.groupType} G${group.groupNo}, slot ${slotNo}).\n**Reason:** ${reason}`,
-          }).catch(() => {});
-        }
-      }
+      // Lobby counts changed (slot freed) — refresh the live lobby panel promptly.
+      scheduleLobbyRefresh(interaction.client);
     }
 
     await audit(
@@ -959,6 +955,16 @@ async function warnModalSubmit(interaction, groupId) {
       .setFooter({ text: 'BLACK RAVEN ESPORTS' })
       .setTimestamp();
     await postToChannel(interaction.client, interaction.guild, warnChannelFor(group.groupType), { embeds: [embed] });
+
+    // DM the team leader (owner): slot-waste warnings AND bans both land in
+    // DMs, not just the warn channel. Best-effort.
+    if (ownerDiscordId) {
+      const dmText = autoBanned
+        ? `⛔ **${teamName}** has been scrims-banned for ${BAN_DAYS} days (slot-waste warning #${warningNo} in ${group.groupType} G${group.groupNo}, slot ${slotNo}).\n**Reason:** ${reason}`
+        : `⚠️ **Slot-waste warning ${warningNo}/${MAX_WARNINGS}** — **${teamName}** (${group.groupType} G${group.groupNo}, slot ${slotNo}).\n**Reason:** ${reason}\nIf warnings exceed ${MAX_WARNINGS}, the team is automatically banned from scrims for ${BAN_DAYS} days.`;
+      const ownerUser = await interaction.client.users.fetch(String(ownerDiscordId)).catch(() => null);
+      if (ownerUser) await ownerUser.send({ content: dmText }).catch(() => {});
+    }
 
     return interaction.reply({
       embeds: [successEmbed(autoBanned
@@ -1011,6 +1017,8 @@ async function removeModalSubmit(interaction, groupId) {
       `${team ? team.name : reg.teamId} removed from ${group.groupType} G${group.groupNo} slot ${slotNo}: ${reason}`
     );
     notifyVacancySafe(group.id, interaction.client);
+    // Lobby counts changed (slot freed) — refresh the live lobby panel promptly.
+    scheduleLobbyRefresh(interaction.client);
     return interaction.reply({
       embeds: [successEmbed(`🗑️ **${team ? team.name : reg.teamId}** removed from slot ${slotNo}.`)],
       flags: MessageFlags.Ephemeral,
@@ -1089,6 +1097,7 @@ async function qualifyModalSubmit(interaction, groupId) {
       });
       resultsText = await tpl.renderTemplate('qualification_results', {
         trophy_emoji: '🏆',
+        owner_mention: ownerMention,
         ...base,
         slot_number: winSlot,
         team_name: winner.name,
@@ -1110,6 +1119,8 @@ async function qualifyModalSubmit(interaction, groupId) {
           .setTimestamp(),
       ],
     });
+    // Group closed — lobby counts changed; refresh the live lobby panel promptly.
+    scheduleLobbyRefresh(interaction.client);
 
     await audit(
       'scrim_qualify',

@@ -12,7 +12,7 @@ const scrimGroups = require('./flows/scrimgroups');
 const scrimAdmin = require('./flows/scrimadmin');
 
 // Build tag — bump when shipping a fix so the console shows which code is live.
-const BUILD = '2026-09-30.scrimport-8';
+const BUILD = '2026-10-02.scrimport-9';
 console.log(`🤖 scrims-bot ${BUILD} starting...`);
 
 // Git auto-update diagnostic: the HeavenCloud egg runs `git pull` on restart.

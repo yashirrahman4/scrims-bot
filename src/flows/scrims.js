@@ -29,6 +29,7 @@ const {
   isValidIgn,
   audit,
 } = require('../utils');
+const { scheduleLobbyRefresh } = require('./scrimadmin');
 
 // ---------- config ----------
 
@@ -960,6 +961,9 @@ async function onRegConfirm(interaction) {
   }
 
   await deleteSession(userId, 'bs_reg');
+
+  // Slot filled — lobby counts changed; refresh the live lobby panel promptly.
+  scheduleLobbyRefresh(interaction.client);
 
   await replyEph(interaction, {
     embeds: [
